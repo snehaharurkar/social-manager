@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+client/node_modules/
+
+# Production Builds
+client/dist/
+dist/
+
+# Local Databases, Uploads & Sessions (Critical: Protects Private Leads, Keys & Media)
+data/*.db
+data/*.db-wal
+data/*.db-shm
+data/backups/
+uploads/*
+!uploads/.gitkeep
+whatsapp_session/
+
+# Environment Secrets
+.env
+.env.local
+.env.*.local
+
+# Cloud Platform & Tooling
+.netlify/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*

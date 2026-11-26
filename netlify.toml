@@ -1,0 +1,18 @@
+# Netlify configuration for SocialManager Frontend SPA
+[build]
+  base = "client"
+  publish = "dist"
+  command = "npm run build"
+
+# Optional: If backend is hosted on Render/Railway, proxy API calls to avoid CORS:
+# [[redirects]]
+#   from = "/api/*"
+#   to = "https://your-backend-service.onrender.com/api/:splat"
+#   status = 200
+#   force = true
+
+# SPA Fallback rule: routes all frontend URLs to index.html
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
