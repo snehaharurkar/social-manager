@@ -720,6 +720,52 @@ Your goal on this phone call:
         </div>
       </div>
 
+      {/* Remote Backend Connection Banner */}
+      {typeof window !== 'undefined' && !['localhost', '127.0.0.1'].includes(window.location.hostname) && (
+        <div className="bg-sky-50 border border-sky-200 rounded-2xl p-4 flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs shadow-sm">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-sky-100 flex items-center justify-center text-sky-700 shrink-0">
+              <ExternalLink className="w-4 h-4" />
+            </div>
+            <div>
+              <p className="font-semibold text-slate-800">
+                Remote Hosting Detected ({window.location.hostname})
+              </p>
+              <p className="text-slate-500 text-[11px]">
+                Netlify serves the frontend UI. To run local Voice AI calls and database, open <a href="http://localhost:5000" target="_blank" rel="noreferrer" className="underline font-bold text-sky-700">http://localhost:5000</a>. Or enter your live Render backend URL:
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            <input
+              type="url"
+              placeholder="e.g. https://your-backend.onrender.com"
+              defaultValue={localStorage.getItem('custom_backend_url') || ''}
+              id="backend-url-input"
+              className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white w-64 focus:outline-none focus:ring-2 focus:ring-sky-500 font-mono"
+            />
+            <button
+              type="button"
+              onClick={() => {
+                const val = (document.getElementById('backend-url-input') as HTMLInputElement)?.value.trim();
+                if (val) {
+                  localStorage.setItem('custom_backend_url', val);
+                  showToast('Backend URL connected! Reloading...', 'success');
+                  setTimeout(() => window.location.reload(), 800);
+                } else {
+                  localStorage.removeItem('custom_backend_url');
+                  showToast('Reset to default backend routing', 'info');
+                  setTimeout(() => window.location.reload(), 800);
+                }
+              }}
+              className="px-3 py-1.5 bg-sky-600 hover:bg-sky-700 text-white font-semibold rounded-lg shadow-sm whitespace-nowrap"
+            >
+              Connect Backend
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Tabs Navigation */}
       <div className="flex border-b border-slate-200 bg-white px-4 rounded-xl shadow-sm gap-2">
         <button

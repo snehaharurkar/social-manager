@@ -12,40 +12,66 @@ import type {
   FollowUpsResponse
 } from './types';
 
-const API_BASE = import.meta.env?.VITE_API_BASE_URL 
-  ? `${import.meta.env.VITE_API_BASE_URL}/api` 
-  : '/api';
+export const getApiBase = (): string => {
+  if (typeof window !== 'undefined') {
+    const custom = localStorage.getItem('custom_backend_url');
+    if (custom && custom.trim()) {
+      return custom.trim().replace(/\/+$/, '') + '/api';
+    }
+  }
+  const envUrl = import.meta.env?.VITE_API_BASE_URL;
+  if (envUrl && envUrl.trim()) {
+    return `${envUrl.trim().replace(/\/+$/, '')}/api`;
+  }
+  return '/api';
+};
+
+export async function safeJson(res: Response, defaultErrMsg: string = 'Request failed') {
+  const text = await res.text();
+  if (text.trim().startsWith('<!DOCTYPE') || text.trim().startsWith('<html') || text.includes('DOCTYPE html')) {
+    throw new Error(
+      'Backend server is not connected on this URL. Netlify only hosts the frontend UI. Please test on http://localhost:5000 (where the backend is running) or set your Render backend URL in settings.'
+    );
+  }
+  try {
+    return JSON.parse(text);
+  } catch {
+    throw new Error(defaultErrMsg);
+  }
+}
+
+const API_BASE = getApiBase();
 
 export const api = {
   // Stats & Dashboard
   async getStats(): Promise<{ stats: DashboardStats; recentLogs: ActivityLog[] }> {
-    const res = await fetch(`${API_BASE}/settings/stats`);
-    const data = await res.json();
+    const res = await fetch(`${getApiBase()}/settings/stats`);
+    const data = await safeJson(res, 'Failed to fetch stats');
     return data;
   },
 
   // Channels
   async getChannels(): Promise<Channel[]> {
-    const res = await fetch(`${API_BASE}/channels`);
-    const data = await res.json();
+    const res = await fetch(`${getApiBase()}/channels`);
+    const data = await safeJson(res, 'Failed to fetch channels');
     return data.channels || [];
   },
 
   async deleteChannel(id: string): Promise<void> {
-    await fetch(`${API_BASE}/channels/${id}`, { method: 'DELETE' });
+    await fetch(`${getApiBase()}/channels/${id}`, { method: 'DELETE' });
   },
 
   async triggerSync(): Promise<void> {
-    await fetch(`${API_BASE}/channels/sync`, { method: 'POST' });
+    await fetch(`${getApiBase()}/channels/sync`, { method: 'POST' });
   },
 
   async connectUplika(data: { apiKey?: string; mcpUrl?: string; customUsername?: string }): Promise<any> {
-    const res = await fetch(`${API_BASE}/channels/connect-uplika`, {
+    const res = await fetch(`${getApiBase()}/channels/connect-uplika`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    const json = await res.json();
+    const json = await safeJson(res, 'Failed to connect Uplika');
     if (!json.success) throw new Error(json.error);
     return json;
   },
@@ -584,22 +610,22 @@ export const api = {
   },
 
   getCallingExportUrl(campaignId: number): string {
-    return `${API_BASE}/calling/campaigns/${campaignId}/export`;
+    return `${getApiBase()}/calling/campaigns/${campaignId}/export`;
   },
 
   async getCallingSettings(): Promise<CallingSettings> {
-    const res = await fetch(`${API_BASE}/calling/settings`);
-    const data = await res.json();
+    const res = await fetch(`${getApiBase()}/calling/settings`);
+    const data = await safeJson(res, 'Failed to fetch calling settings');
     return data.settings;
   },
 
   async saveCallingSettings(settings: Partial<CallingSettings>): Promise<void> {
-    const res = await fetch(`${API_BASE}/calling/settings`, {
+    const res = await fetch(`${getApiBase()}/calling/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings)
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Failed to save calling settings');
     if (!data.success) throw new Error(data.error || 'Failed to save calling settings');
   },
 
@@ -613,12 +639,12 @@ export const api = {
     follow_up_date?: string | null;
     follow_up_notes?: string;
   }): Promise<{ success: boolean; lead: CallingLead; message: string }> {
-    const res = await fetch(`${API_BASE}/calling/leads`, {
+    const res = await fetch(`${getApiBase()}/calling/leads`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(leadData)
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Failed to add lead');
     if (!data.success) throw new Error(data.error || 'Failed to add lead');
     return data;
   },
@@ -631,12 +657,12 @@ export const api = {
     notes?: string;
     campaign_id?: number | null;
   }): Promise<{ success: boolean; lead: CallingLead; callResult: any; message: string }> {
-    const res = await fetch(`${API_BASE}/calling/call-direct`, {
+    const res = await fetch(`${getApiBase()}/calling/call-direct`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    const json = await res.json();
+    const json = await safeJson(res, 'Failed to place direct call');
     if (!json.success) throw new Error(json.error || 'Failed to place direct call');
     return json;
   }
