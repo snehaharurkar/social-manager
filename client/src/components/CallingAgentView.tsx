@@ -79,6 +79,7 @@ export const CallingAgentView: React.FC = () => {
 
   // Add Individual Lead Modal State
   const [addLeadModalOpen, setAddLeadModalOpen] = useState(false);
+  const [quickCallModalOpen, setQuickCallModalOpen] = useState(false);
   const [newLeadForm, setNewLeadForm] = useState({
     name: '',
     phone_number: '',
@@ -138,6 +139,7 @@ Your goal on this phone call:
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setAddLeadModalOpen(false);
+        setQuickCallModalOpen(false);
         setFollowUpModalOpen(false);
         setTranscriptModalOpen(false);
       }
@@ -178,12 +180,14 @@ Your goal on this phone call:
     }
   };
 
-  const loadLeads = async (campaignId: number) => {
+  const loadLeads = async (campaignId: number, filterOverride?: { status?: string; search?: string }) => {
     setLoadingLeads(true);
     try {
+      const statusToUse = filterOverride?.status !== undefined ? filterOverride.status : statusFilter;
+      const searchToUse = filterOverride?.search !== undefined ? filterOverride.search : searchQuery;
       const data = await api.getCampaignLeads(campaignId, {
-        status: statusFilter,
-        search: searchQuery
+        status: statusToUse,
+        search: searchToUse
       });
       setLeads(data);
     } catch (err) {
@@ -317,6 +321,7 @@ Your goal on this phone call:
 
   // Single Call Trigger for any lead
   const handleCallSingleLead = async (lead: CallingLead) => {
+    setActiveTab('dialer');
     setIsCallingSingle(true);
     setActiveCallLead(lead);
     setCallTimer(0);
@@ -334,8 +339,9 @@ Your goal on this phone call:
       setCallOutcome(result.outcome);
       speakText(result.transcript);
 
-      if (selectedCampaignId) {
-        await loadLeads(selectedCampaignId);
+      const targetCampId = lead.campaign_id || selectedCampaignId;
+      if (targetCampId) {
+        await loadLeads(targetCampId);
       }
       await loadCampaigns();
     } catch (err: any) {
@@ -355,6 +361,7 @@ Your goal on this phone call:
 
     setSavingNewLead(true);
     try {
+      const shouldCall = newLeadForm.call_immediately;
       const res = await api.createIndividualLead({
         campaign_id: selectedCampaignId,
         name: newLeadForm.name.trim(),
@@ -377,13 +384,22 @@ Your goal on this phone call:
         call_immediately: false
       });
 
-      await loadCampaigns();
-      if (selectedCampaignId) await loadLeads(selectedCampaignId);
+      setStatusFilter('all');
+      setSearchQuery('');
 
-      if (newLeadForm.call_immediately && created) {
-        handleCallSingleLead(created);
+      await loadCampaigns();
+      const targetCampId = created?.campaign_id || selectedCampaignId;
+      if (targetCampId) {
+        setSelectedCampaignId(targetCampId);
+        await loadLeads(targetCampId, { status: 'all', search: '' });
+      }
+
+      if (shouldCall && created) {
+        setActiveTab('dialer');
+        await handleCallSingleLead(created);
       } else {
-        showToast(`Lead "${created.name}" added successfully!`);
+        setActiveTab('leads');
+        showToast(`Lead "${created.name}" added successfully to CRM!`);
       }
     } catch (err: any) {
       showToast(`Failed to add lead: ${err.message}`, 'error');
@@ -400,6 +416,8 @@ Your goal on this phone call:
       return;
     }
 
+    setActiveTab('dialer');
+    setQuickCallModalOpen(false);
     setCallingDirect(true);
     setIsCallingSingle(true);
     setCallTimer(0);
@@ -425,12 +443,18 @@ Your goal on this phone call:
       speakText(res.callResult.transcript || '');
 
       await loadCampaigns();
-      if (selectedCampaignId) await loadLeads(selectedCampaignId);
+      const targetCampId = res.lead?.campaign_id || selectedCampaignId;
+      if (targetCampId) {
+        setSelectedCampaignId(targetCampId);
+        await loadLeads(targetCampId, { status: 'all', search: '' });
+      }
 
       setDirectCallPhone('');
       setDirectCallName('');
+      showToast(`Call to ${res.lead?.name || directCallPhone} completed (${res.callResult.outcome})`);
     } catch (err: any) {
       setCallTranscript(`Call error: ${err.message}`);
+      showToast(`Call error: ${err.message}`, 'error');
     } finally {
       if (callTimerRef.current) clearInterval(callTimerRef.current);
       setCallingDirect(false);
@@ -663,6 +687,16 @@ Your goal on this phone call:
               ))}
             </select>
           )}
+
+          <button
+            type="button"
+            onClick={() => setQuickCallModalOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3.5 py-2 text-sm font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-lg shadow-sm transition"
+            title="Dial any phone number directly to test Voice AI"
+          >
+            <PhoneCall className="w-4 h-4" />
+            📞 Quick Call Number
+          </button>
 
           <button
             type="button"
@@ -2164,6 +2198,115 @@ Your goal on this phone call:
                 Save Lead
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 1B: QUICK CALL NUMBER MODAL */}
+      {quickCallModalOpen && (
+        <div 
+          onClick={(e) => { if (e.target === e.currentTarget) setQuickCallModalOpen(false); }}
+          className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-sm flex items-center justify-center p-4"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-xl border border-slate-200 space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="w-8 h-8 rounded-lg bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                  <PhoneCall className="w-4 h-4" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-slate-900">
+                    Quick Call Phone Number
+                  </h3>
+                  <p className="text-xs text-slate-500">Test voice call immediately with AI Voice Caller</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQuickCallModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold p-1"
+              >
+                ✕
+              </button>
+            </div>
+
+            <form onSubmit={handleQuickCallIndividual} className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Contact / Lead Name
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Sneha or Test Contact"
+                  value={directCallName}
+                  onChange={(e) => setDirectCallName(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Phone Number to Dial <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="tel"
+                  placeholder="e.g. +91 98765 43210 or 9876543210"
+                  value={directCallPhone}
+                  onChange={(e) => setDirectCallPhone(e.target.value)}
+                  required
+                  autoFocus
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm font-mono bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Inquiry / Topic
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. Acoustic Guitar Lessons"
+                  value={directCallInterest}
+                  onChange={(e) => setDirectCallInterest(e.target.value)}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs bg-slate-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                />
+              </div>
+
+              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-xs text-emerald-800 space-y-1">
+                <div className="font-semibold flex items-center gap-1.5">
+                  <Sparkles className="w-3.5 h-3.5 text-emerald-600" />
+                  What happens when you click "Dial & Call Now":
+                </div>
+                <ul className="list-disc pl-4 text-[11px] text-emerald-700 space-y-0.5">
+                  <li>Switches directly to the live auto-dialer console.</li>
+                  <li>Aria greets the contact with conversational Voice AI.</li>
+                  <li>Real-time speech synthesizer plays audio through your browser speakers.</li>
+                  <li>Full live transcript & outcome are automatically recorded in CRM.</li>
+                </ul>
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setQuickCallModalOpen(false)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={callingDirect}
+                  className="px-5 py-2 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 rounded-lg shadow-sm flex items-center gap-1.5 transition"
+                >
+                  {callingDirect ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <PhoneCall className="w-3.5 h-3.5" />
+                  )}
+                  📞 Dial & Call Now
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}
