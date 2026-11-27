@@ -3,23 +3,77 @@ const path = require('path');
 const XLSX = require('xlsx');
 const { db, getSetting, setSetting, logActivity } = require('../db');
 
-// Clean and normalize phone numbers into E.164
+// Clean and normalize phone numbers into E.164 (strictly validate length)
 function formatPhoneNumber(phone) {
   if (!phone) return '';
-  let digits = String(phone).replace(/[^0-9+]/g, '');
-  if (!digits.startsWith('+')) {
-    // If 10 digits typical Indian mobile starting with 6, 7, 8, 9
-    if (digits.length === 10 && /^[6-9]/.test(digits)) {
-      digits = `+91${digits}`;
+  const str = String(phone).trim();
+  const digitsOnly = str.replace(/[^0-9]/g, '');
+  if (digitsOnly.length < 7 || digitsOnly.length > 15) {
+    return ''; // Invalid length
+  }
+  let formatted = str.replace(/[^0-9+]/g, '');
+  if (!formatted.startsWith('+')) {
+    if (digitsOnly.length === 10 && /^[6-9]/.test(digitsOnly)) {
+      formatted = `+91${digitsOnly}`;
     } else {
-      digits = `+${digits}`;
+      formatted = `+${digitsOnly}`;
     }
   }
-  return digits;
+  return formatted;
 }
 
-// Parse Excel (.xlsx, .xls) or CSV file
-function parseExcelFile(filePath) {
+/**
+ * Intelligent Header Detection: Scans the top 15 rows of a spreadsheet
+ * to find the row that most strongly represents column headers.
+ */
+function detectHeaderRowIndex(rawMatrix) {
+  if (!rawMatrix || rawMatrix.length === 0) return 0;
+
+  const headerKeywords = [
+    'name', 'full name', 'candidate', 'student', 'lead', 'customer', 'client', 'contact name',
+    'phone', 'mobile', 'contact', 'cell', 'tel', 'whatsapp', 'phone number', 'mobile number', 'contact number',
+    'email', 'mail', 'email id', 'email address',
+    'interest', 'course', 'topic', 'program', 'subject', 'service', 'inquiry', 'query',
+    'consent', 'permission', 'opt in', 'opt-in', 'agree', 'allow call',
+    'notes', 'remarks', 'comment', 'status'
+  ];
+
+  let bestIndex = 0;
+  let highestScore = -1;
+
+  const maxScanRows = Math.min(rawMatrix.length, 15);
+  for (let i = 0; i < maxScanRows; i++) {
+    const row = rawMatrix[i];
+    if (!Array.isArray(row) || row.length === 0) continue;
+
+    let score = 0;
+    const nonEmptyCells = row.filter(cell => cell !== null && cell !== undefined && String(cell).trim() !== '');
+    if (nonEmptyCells.length === 0) continue;
+
+    // Check cells against keywords
+    for (const cell of nonEmptyCells) {
+      const cellText = String(cell).toLowerCase().trim().replace(/[_\s-]+/g, ' ');
+      for (const kw of headerKeywords) {
+        if (cellText === kw || cellText.includes(kw)) {
+          score += (cellText === kw ? 3 : 1);
+        }
+      }
+    }
+
+    // A row with multiple matches and diverse string cells is very likely the header
+    if (score > highestScore) {
+      highestScore = score;
+      bestIndex = i;
+    }
+  }
+
+  return bestIndex;
+}
+
+/**
+ * Intelligent Sheet Inspector & Parser with User Column Mapping and Strict Validation
+ */
+function inspectAndParseSheet(filePath, customMapping = null, customHeaderIndex = null) {
   const normalizedPath = path.isAbsolute(filePath) ? path.normalize(filePath) : path.join(process.cwd(), filePath);
   if (!fs.existsSync(normalizedPath)) {
     throw new Error(`File not found: ${normalizedPath}`);
@@ -32,54 +86,186 @@ function parseExcelFile(filePath) {
   }
 
   const worksheet = workbook.Sheets[sheetName];
-  const rows = XLSX.utils.sheet_to_json(worksheet, { defval: '' });
+  // Read as raw 2D array of rows
+  const rawMatrix = XLSX.utils.sheet_to_json(worksheet, { header: 1, defval: '' });
 
-  if (!rows || rows.length === 0) {
+  if (!rawMatrix || rawMatrix.length === 0) {
     throw new Error('The uploaded Excel sheet contains no rows.');
   }
 
-  const detectedColumns = Object.keys(rows[0] || {});
+  // 1. Determine header row
+  const headerIndex = typeof customHeaderIndex === 'number' && customHeaderIndex >= 0
+    ? customHeaderIndex
+    : detectHeaderRowIndex(rawMatrix);
 
-  // Heuristic column matcher
-  const findKey = (row, candidates) => {
-    const keys = Object.keys(row);
+  const headerRow = rawMatrix[headerIndex] || [];
+  
+  // Clean column names
+  const detectedColumns = [];
+  const colIndexMap = {}; // name -> colIndex
+
+  headerRow.forEach((cell, idx) => {
+    let colName = String(cell || '').trim();
+    if (!colName) {
+      colName = `Column_${idx + 1}`;
+    }
+    // Handle duplicates in header names
+    if (detectedColumns.includes(colName)) {
+      colName = `${colName}_${idx + 1}`;
+    }
+    detectedColumns.push(colName);
+    colIndexMap[colName] = idx;
+  });
+
+  // 2. Determine suggested mapping if none provided
+  const findBestCol = (candidates) => {
     for (const cand of candidates) {
-      const match = keys.find(k => k.toLowerCase().trim().replace(/[_\s-]/g, '') === cand.toLowerCase());
-      if (match && row[match]) return String(row[match]).trim();
+      const match = detectedColumns.find(c => {
+        const clean = c.toLowerCase().replace(/[_\s-]+/g, '');
+        return clean === cand || clean.includes(cand);
+      });
+      if (match) return match;
     }
     return '';
   };
 
+  const suggestedMapping = {
+    nameCol: findBestCol(['name', 'fullname', 'student', 'candidate', 'lead', 'client', 'customer']),
+    phoneCol: findBestCol(['phone', 'phonenumber', 'mobile', 'mobilenumber', 'contact', 'contactnumber', 'cell', 'whatsapp']),
+    emailCol: findBestCol(['email', 'mail', 'emailaddress', 'emailid']),
+    interestCol: findBestCol(['interest', 'course', 'service', 'subject', 'program', 'topic', 'inquiry', 'query']),
+    notesCol: findBestCol(['notes', 'remark', 'remarks', 'comment', 'description', 'message']),
+    consentCol: findBestCol(['consent', 'permission', 'optin', 'optin', 'agree', 'allowcall'])
+  };
+
+  const mappingToUse = customMapping ? { ...suggestedMapping, ...customMapping } : suggestedMapping;
+
+  // 3. Extract sample rows (top 5 data rows after header)
+  const sampleRows = [];
+  const maxSampleRows = Math.min(rawMatrix.length, headerIndex + 6);
+  for (let i = headerIndex + 1; i < maxSampleRows; i++) {
+    const rawR = rawMatrix[i];
+    if (Array.isArray(rawR) && rawR.some(c => String(c).trim() !== '')) {
+      const rowObj = {};
+      detectedColumns.forEach((col, idx) => {
+        rowObj[col] = rawR[idx] !== undefined ? String(rawR[idx]).trim() : '';
+      });
+      sampleRows.push(rowObj);
+    }
+  }
+
+  // 4. Parse all data rows with strict validation
   const validLeads = [];
-  rows.forEach((row, idx) => {
-    const name = findKey(row, ['name', 'fullname', 'firstname', 'leadname', 'client', 'customer', 'student']) || `Lead #${idx + 1}`;
-    const rawPhone = findKey(row, ['phone', 'phonenumber', 'mobile', 'mobilenumber', 'contact', 'contactnumber', 'cell', 'tel']);
-    const email = findKey(row, ['email', 'emailaddress', 'mail']);
-    const interest = findKey(row, ['interest', 'course', 'service', 'subject', 'program', 'product', 'category']) || 'Music & Lessons';
-    const notes = findKey(row, ['notes', 'remarks', 'comment', 'description', 'message']);
-    const followUp = findKey(row, ['followup', 'followupdate', 'callback', 'calltime']);
+  const phoneSeen = new Set();
+
+  let missingPhoneCount = 0;
+  let missingConsentCount = 0;
+  let duplicateCount = 0;
+  let skippedRowsCount = 0;
+  let validCallableCount = 0;
+
+  const dataRows = rawMatrix.slice(headerIndex + 1);
+
+  dataRows.forEach((rawR, rowIdx) => {
+    if (!Array.isArray(rawR) || !rawR.some(c => String(c || '').trim() !== '')) {
+      skippedRowsCount++;
+      return;
+    }
+
+    const getVal = (colName) => {
+      if (!colName) return '';
+      const colIdx = colIndexMap[colName];
+      return colIdx !== undefined && rawR[colIdx] !== undefined ? String(rawR[colIdx]).trim() : '';
+    };
+
+    const rawName = getVal(mappingToUse.nameCol);
+    const rawPhone = getVal(mappingToUse.phoneCol);
+    const rawEmail = getVal(mappingToUse.emailCol);
+    const rawInterest = getVal(mappingToUse.interestCol);
+    const rawNotes = getVal(mappingToUse.notesCol);
+    const rawConsent = getVal(mappingToUse.consentCol);
+
+    // If every single mapped column is blank, skip this row
+    if (!rawName && !rawPhone && !rawEmail && !rawInterest) {
+      skippedRowsCount++;
+      return;
+    }
 
     const cleanPhone = formatPhoneNumber(rawPhone);
+    let isCallable = true;
+    let exclusionReason = null;
 
-    if (cleanPhone || name) {
-      validLeads.push({
-        name,
-        phone_number: cleanPhone || 'Not Provided',
-        email: email || '',
-        interest: interest || 'Acoustic Guitar Lessons',
-        notes: notes || '',
-        follow_up_date: followUp || null,
-        raw_row: row
-      });
+    // Check Phone Validity (NO fake phone numbers allowed)
+    if (!cleanPhone) {
+      isCallable = false;
+      exclusionReason = 'Missing or invalid phone number';
+      missingPhoneCount++;
     }
+
+    // Check Consent (if consent column is mapped)
+    if (isCallable && mappingToUse.consentCol) {
+      const consentLower = rawConsent.toLowerCase().trim();
+      if (['no', 'false', '0', 'denied', 'opt-out', 'optout', 'refused', 'n'].includes(consentLower)) {
+        isCallable = false;
+        exclusionReason = 'Explicit opt-out / consent refused';
+        missingConsentCount++;
+      } else if (!rawConsent) {
+        // Missing explicit consent value
+        isCallable = false;
+        exclusionReason = 'Consent value missing';
+        missingConsentCount++;
+      }
+    }
+
+    // Check Duplicate Phone Numbers
+    if (isCallable) {
+      if (phoneSeen.has(cleanPhone)) {
+        isCallable = false;
+        exclusionReason = 'Duplicate phone number in sheet';
+        duplicateCount++;
+      } else {
+        phoneSeen.add(cleanPhone);
+      }
+    }
+
+    if (isCallable) {
+      validCallableCount++;
+    }
+
+    validLeads.push({
+      rowIndex: headerIndex + 1 + rowIdx + 1, // 1-based Excel row number
+      name: rawName || 'Unnamed Contact',
+      phone_number: cleanPhone || (rawPhone ? `Invalid: ${rawPhone}` : 'Missing'),
+      email: rawEmail || '',
+      interest: rawInterest || 'General Inquiry',
+      notes: rawNotes || '',
+      consent: rawConsent || 'Yes',
+      is_callable: isCallable,
+      exclusion_reason: exclusionReason
+    });
   });
 
   return {
     sheetName,
-    totalRows: rows.length,
-    validLeads,
-    detectedColumns
+    totalRows: dataRows.length,
+    validCallableLeads: validCallableCount,
+    excludedLeadsCount: validLeads.length - validCallableCount,
+    missingPhoneCount,
+    missingConsentCount,
+    duplicateCount,
+    skippedRowsCount,
+    detectedColumns,
+    headerRowIndex: headerIndex,
+    suggestedMapping,
+    currentMapping: mappingToUse,
+    sampleRows,
+    validLeads
   };
+}
+
+// Backwards-compatible alias
+function parseExcelFile(filePath) {
+  return inspectAndParseSheet(filePath);
 }
 
 // Create a Campaign from parsed leads
@@ -103,23 +289,35 @@ function createCampaign(title, fileName, leads, customScript, delaySeconds = 8) 
   const insertLead = db.prepare(`
     INSERT INTO calling_leads (
       campaign_id, name, phone_number, email, interest, notes, call_status, follow_up_date
-    ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `);
 
+  let callableCount = 0;
+  let excludedCount = 0;
+
   for (const lead of leads) {
+    const isCallable = lead.is_callable !== false && lead.phone_number && !lead.phone_number.startsWith('Invalid') && lead.phone_number !== 'Missing';
+    const initialStatus = isCallable ? 'pending' : 'excluded';
+    if (isCallable) callableCount++; else excludedCount++;
+
+    const notesToSave = !isCallable && lead.exclusion_reason 
+      ? `[EXCLUDED: ${lead.exclusion_reason}] ${lead.notes || ''}`.trim()
+      : (lead.notes || null);
+
     insertLead.run(
       campaignId,
-      lead.name,
+      lead.name || 'Unnamed Contact',
       lead.phone_number,
       lead.email || null,
       lead.interest || null,
-      lead.notes || null,
+      notesToSave,
+      initialStatus,
       lead.follow_up_date || null
     );
   }
 
-  logActivity('calling', 'campaign_created', 'success', `Created campaign "${title}" with ${leads.length} leads`);
-  return { campaignId, totalLeads: leads.length };
+  logActivity('calling', 'campaign_created', 'success', `Created campaign "${title}" with ${leads.length} leads (${callableCount} callable, ${excludedCount} excluded)`);
+  return { campaignId, totalLeads: leads.length, callableLeads: callableCount, excludedLeads: excludedCount };
 }
 
 // ----------------------------------------------------
@@ -512,6 +710,7 @@ function exportCampaignToExcelBuffer(campaignId) {
 module.exports = {
   formatPhoneNumber,
   parseExcelFile,
+  inspectAndParseSheet,
   createCampaign,
   dispatchCallToLead,
   simulateCallToLead,

@@ -1,7 +1,7 @@
 const cron = require('node-cron');
 const path = require('path');
 const fs = require('fs');
-const { db, logActivity } = require('../db');
+const { db, logActivity, createNotification } = require('../db');
 const { getChannelComments, replyToYouTubeComment, refreshYouTubeAccessToken, uploadYouTubeVideo } = require('./youtube');
 const { getInstagramMedia, getInstagramComments, replyToInstagramComment, publishInstagramPost } = require('./instagram');
 const { publishPostViaUplika } = require('./uplika');
@@ -242,6 +242,15 @@ async function processScheduledPosts() {
         'success', 
         `Published scheduled post "${post.title || post.content.slice(0, 30)}"${publishedUrl ? ` [${publishedUrl}]` : ''} to ${channel.display_name}`
       );
+
+      createNotification(
+        `Post Published to ${channel.platform.toUpperCase()}`,
+        `"${post.title || post.content.slice(0, 40)}..." was published on ${channel.display_name}.`,
+        'publishing',
+        'success',
+        'scheduler',
+        post.id
+      );
     } catch (err) {
       console.error(`[Scheduled Publish Failed]:`, err.message);
       db.prepare(`
@@ -251,6 +260,15 @@ async function processScheduledPosts() {
       `).run(err.message, post.id);
 
       logActivity(channel.platform, 'scheduled_publish', 'failed', `Failed to publish post: ${err.message}`);
+
+      createNotification(
+        `Publishing Failed on ${channel.platform.toUpperCase()}`,
+        `Could not publish "${post.title || post.content.slice(0, 40)}...": ${err.message}`,
+        'publishing',
+        'error',
+        'scheduler',
+        post.id
+      );
     }
   }
 }

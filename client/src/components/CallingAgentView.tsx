@@ -26,7 +26,12 @@ import {
   ShieldCheck,
   Key,
   UserPlus,
-  Users
+  Users,
+  Sliders,
+  XCircle,
+  AlertTriangle,
+  FileText,
+  Check
 } from 'lucide-react';
 import type { CallingLead, CallingCampaign, CallingSettings, ParsedSheetPreview, FollowUpsResponse } from '../types';
 import { api } from '../api';
@@ -50,6 +55,25 @@ export const CallingAgentView: React.FC = () => {
   const [customScript, setCustomScript] = useState('Hello {name}! This is Aria from Sneha Harmony. I noticed you were interested in guitar lessons and music sessions. Do you have a moment to chat?');
   const [delaySeconds, setDelaySeconds] = useState(6);
   const [launchingCampaign, setLaunchingCampaign] = useState(false);
+  const [confirmRemoveFileModal, setConfirmRemoveFileModal] = useState(false);
+  const [mappingModalOpen, setMappingModalOpen] = useState(false);
+  const [currentMapping, setCurrentMapping] = useState<{
+    nameCol: string;
+    phoneCol: string;
+    emailCol: string;
+    interestCol: string;
+    notesCol: string;
+    consentCol: string;
+  }>({
+    nameCol: '',
+    phoneCol: '',
+    emailCol: '',
+    interestCol: '',
+    notesCol: '',
+    consentCol: ''
+  });
+  const [headerRowIdx, setHeaderRowIdx] = useState(0);
+  const [applyingMapping, setApplyingMapping] = useState(false);
 
   // Auto-Dialer State
   const [isDialing, setIsDialing] = useState(false);
@@ -180,15 +204,23 @@ Your goal on this phone call:
     }
   };
 
-  const loadLeads = async (campaignId: number, filterOverride?: { status?: string; search?: string }) => {
+  const loadLeads = async (campaignId?: number | null, filterOverride?: { status?: string; search?: string }) => {
     setLoadingLeads(true);
     try {
       const statusToUse = filterOverride?.status !== undefined ? filterOverride.status : statusFilter;
       const searchToUse = filterOverride?.search !== undefined ? filterOverride.search : searchQuery;
-      const data = await api.getCampaignLeads(campaignId, {
-        status: statusToUse,
-        search: searchToUse
-      });
+      let data: CallingLead[] = [];
+      if (campaignId) {
+        data = await api.getCampaignLeads(campaignId, {
+          status: statusToUse,
+          search: searchToUse
+        });
+      } else {
+        data = await api.getAllCallingLeads({
+          status: statusToUse,
+          search: searchToUse
+        });
+      }
       setLeads(data);
     } catch (err) {
       console.error('Failed to load leads:', err);
@@ -254,11 +286,20 @@ Your goal on this phone call:
 
   // Upload Excel Sheet
   const handleFileUpload = async (file: File) => {
+    if (sheetPreview?.filePath && sheetPreview.filePath !== 'demo') {
+      api.cleanupUploadedSheet(sheetPreview.filePath);
+    }
     setUploadFile(file);
     setUploading(true);
     try {
       const res = await api.uploadCallingSheet(file);
       setSheetPreview(res);
+      if (res.suggestedMapping) {
+        setCurrentMapping(res.suggestedMapping);
+      }
+      if (res.headerRowIndex !== undefined) {
+        setHeaderRowIdx(res.headerRowIndex);
+      }
       setCampaignTitle(`Campaign - ${file.name.replace(/\.[^/.]+$/, '')}`);
     } catch (err: any) {
       alert(`Upload Error: ${err.message}`);
@@ -267,14 +308,57 @@ Your goal on this phone call:
     }
   };
 
+  // Remove Uploaded File and Reset State
+  const handleRemoveUploadedFile = async () => {
+    if (sheetPreview?.filePath && sheetPreview.filePath !== 'demo') {
+      try {
+        await api.cleanupUploadedSheet(sheetPreview.filePath);
+      } catch {}
+    }
+    setSheetPreview(null);
+    setUploadFile(null);
+    setCampaignTitle('');
+    setCurrentMapping({
+      nameCol: '',
+      phoneCol: '',
+      emailCol: '',
+      interestCol: '',
+      notesCol: '',
+      consentCol: ''
+    });
+    setHeaderRowIdx(0);
+    setConfirmRemoveFileModal(false);
+    const input = document.getElementById('sheet-file-input') as HTMLInputElement | null;
+    if (input) input.value = '';
+  };
+
+  // Apply Custom Column Mapping
+  const handleApplyMapping = async () => {
+    if (!sheetPreview?.filePath) return;
+    setApplyingMapping(true);
+    try {
+      const res = await api.applyCallingColumnMapping({
+        filePath: sheetPreview.filePath,
+        mapping: currentMapping,
+        headerRowIndex: headerRowIdx
+      });
+      setSheetPreview(res);
+      setMappingModalOpen(false);
+    } catch (err: any) {
+      alert(`Mapping Error: ${err.message}`);
+    } finally {
+      setApplyingMapping(false);
+    }
+  };
+
   // Load Built-in Demo Leads
   const loadDemoSheet = () => {
     const demoLeads = [
-      { name: 'Rahul Sharma', phone_number: '+919876543210', email: 'rahul.music@gmail.com', interest: 'Acoustic Guitar Mastery', notes: 'Inquired from YouTube cover video' },
-      { name: 'Pooja Verma', phone_number: '+919812345678', email: 'pooja.verma@outlook.com', interest: 'Beginner Vocal & Rhythm', notes: 'Requested fee structure' },
-      { name: 'Arjun Mehta', phone_number: '+919823456789', email: 'arjun.mehta@gmail.com', interest: 'Fingerstyle Guitar Lessons', notes: 'Watched latest Instagram Reel' },
-      { name: 'Snehal Rao', phone_number: '+919834567890', email: 'snehal.rao@yahoo.com', interest: '1-on-1 Online Masterclass', notes: 'Wants weekend evening batch' },
-      { name: 'Vikram Patel', phone_number: '+919845678901', email: 'vikram.patel@gmail.com', interest: 'Guitar Equipment & Collab', notes: 'Creator collaboration inquiry' }
+      { rowIndex: 1, name: 'Rahul Sharma', phone_number: '+919876543210', email: 'rahul.music@gmail.com', interest: 'Acoustic Guitar Mastery', notes: 'Inquired from YouTube cover video', consent: 'yes', is_callable: true },
+      { rowIndex: 2, name: 'Pooja Verma', phone_number: '+919812345678', email: 'pooja.verma@outlook.com', interest: 'Beginner Vocal & Rhythm', notes: 'Requested fee structure', consent: 'yes', is_callable: true },
+      { rowIndex: 3, name: 'Arjun Mehta', phone_number: '+919823456789', email: 'arjun.mehta@gmail.com', interest: 'Fingerstyle Guitar Lessons', notes: 'Watched latest Instagram Reel', consent: 'yes', is_callable: true },
+      { rowIndex: 4, name: 'Snehal Rao', phone_number: '+919834567890', email: 'snehal.rao@yahoo.com', interest: '1-on-1 Online Masterclass', notes: 'Wants weekend evening batch', consent: 'yes', is_callable: true },
+      { rowIndex: 5, name: 'Vikram Patel', phone_number: '+919845678901', email: 'vikram.patel@gmail.com', interest: 'Guitar Equipment & Collab', notes: 'Creator collaboration inquiry', consent: 'yes', is_callable: true }
     ];
 
     setSheetPreview({
@@ -284,8 +368,40 @@ Your goal on this phone call:
       filePath: 'demo',
       sheetName: 'Sheet1',
       totalRows: 5,
-      detectedColumns: ['Name', 'Phone', 'Email', 'Interest', 'Notes'],
+      validCallableLeads: 5,
+      excludedLeadsCount: 0,
+      missingPhoneCount: 0,
+      missingConsentCount: 0,
+      duplicateCount: 0,
+      skippedRowsCount: 0,
+      detectedColumns: ['Name', 'Phone', 'Email', 'Interest', 'Notes', 'Consent'],
+      headerRowIndex: 0,
+      suggestedMapping: {
+        nameCol: 'Name',
+        phoneCol: 'Phone',
+        emailCol: 'Email',
+        interestCol: 'Interest',
+        notesCol: 'Notes',
+        consentCol: 'Consent'
+      },
+      currentMapping: {
+        nameCol: 'Name',
+        phoneCol: 'Phone',
+        emailCol: 'Email',
+        interestCol: 'Interest',
+        notesCol: 'Notes',
+        consentCol: 'Consent'
+      },
+      sampleRows: [],
       validLeads: demoLeads
+    });
+    setCurrentMapping({
+      nameCol: 'Name',
+      phoneCol: 'Phone',
+      emailCol: 'Email',
+      interestCol: 'Interest',
+      notesCol: 'Notes',
+      consentCol: 'Consent'
     });
     setCampaignTitle('Demo Guitar & Music Outbound Campaign');
   };
@@ -732,7 +848,7 @@ Your goal on this phone call:
                 Remote Hosting Detected ({window.location.hostname})
               </p>
               <p className="text-slate-500 text-[11px]">
-                Netlify serves the frontend UI. To run local Voice AI calls and database, open <a href="http://localhost:5000" target="_blank" rel="noreferrer" className="underline font-bold text-sky-700">http://localhost:5000</a>. Or enter your live Render backend URL:
+                Netlify only hosts the frontend UI. For full functionality (saving leads, Voice AI calls, and database), open <a href="http://localhost:3000" target="_blank" rel="noreferrer" className="underline font-bold text-sky-700">http://localhost:3000</a> on your computer. Or enter your live backend URL:
               </p>
             </div>
           </div>
@@ -906,21 +1022,107 @@ Your goal on this phone call:
                 </div>
               </div>
 
-              {/* Preview Table if sheet parsed */}
+              {/* Preview Table & Upload Controls if sheet parsed */}
               {sheetPreview && (
                 <div className="mt-6 space-y-4">
-                  <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-                    <div>
-                      <h4 className="text-sm font-bold text-slate-800 flex items-center gap-2">
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                        Parsed Successfully: {sheetPreview.validLeads.length} Leads Found
-                      </h4>
-                      <p className="text-xs text-slate-500">
-                        Sheet: <span className="font-medium text-slate-700">{sheetPreview.sheetName}</span> • Columns matched: {sheetPreview.detectedColumns.join(', ')}
-                      </p>
+                  {/* File Info & Upload Action Controls */}
+                  <div className="flex flex-wrap items-center justify-between gap-3 p-4 bg-slate-50 border border-slate-200 rounded-xl">
+                    <div className="flex items-center gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-sky-100 text-sky-700 flex items-center justify-center font-bold">
+                        <FileSpreadsheet className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h4 className="text-sm font-bold text-slate-800">{sheetPreview.fileName}</h4>
+                        <p className="text-xs text-slate-500">
+                          Sheet: <span className="font-semibold text-slate-700">{sheetPreview.sheetName}</span> • Total Rows: <span className="font-semibold text-slate-700">{sheetPreview.totalRows}</span>
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setMappingModalOpen(true)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-sky-700 bg-sky-50 hover:bg-sky-100 border border-sky-200 rounded-lg transition"
+                      >
+                        <Sliders className="w-3.5 h-3.5" />
+                        Column Mapping
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById('sheet-file-input')?.click()}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg transition"
+                      >
+                        <RefreshCw className="w-3.5 h-3.5" />
+                        Replace File
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setConfirmRemoveFileModal(true)}
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-rose-700 bg-rose-50 hover:bg-rose-100 border border-rose-200 rounded-lg transition"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        Remove File
+                      </button>
                     </div>
                   </div>
 
+                  {/* Data Validation Report */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    <div className="p-3 bg-emerald-50/80 border border-emerald-200 rounded-xl">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Callable Leads</span>
+                      <div className="text-xl font-bold text-emerald-800 mt-0.5">
+                        {sheetPreview.validCallableLeads ?? sheetPreview.validLeads.filter(l => l.is_callable).length}
+                      </div>
+                      <span className="text-[10px] text-emerald-600">Valid phone & ready to dial</span>
+                    </div>
+
+                    <div className="p-3 bg-rose-50/80 border border-rose-200 rounded-xl">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-rose-700">Excluded (No Phone)</span>
+                      <div className="text-xl font-bold text-rose-800 mt-0.5">
+                        {sheetPreview.missingPhoneCount ?? sheetPreview.validLeads.filter(l => !l.phone_number || l.exclusion_reason?.includes('phone')).length}
+                      </div>
+                      <span className="text-[10px] text-rose-600">Missing or invalid phone</span>
+                    </div>
+
+                    <div className="p-3 bg-amber-50/80 border border-amber-200 rounded-xl">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Duplicates Skipped</span>
+                      <div className="text-xl font-bold text-amber-800 mt-0.5">
+                        {sheetPreview.duplicateCount ?? 0}
+                      </div>
+                      <span className="text-[10px] text-amber-600">Repeated phone in file</span>
+                    </div>
+
+                    <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                      <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Total Rows</span>
+                      <div className="text-xl font-bold text-slate-800 mt-0.5">
+                        {sheetPreview.totalRows ?? sheetPreview.validLeads.length}
+                      </div>
+                      <span className="text-[10px] text-slate-500">{sheetPreview.skippedRowsCount ?? 0} blank rows skipped</span>
+                    </div>
+                  </div>
+
+                  {/* Calling Safety Alert */}
+                  {(sheetPreview.validCallableLeads === 0 || (sheetPreview.excludedLeadsCount ?? 0) > 0) && (
+                    <div className={`p-3 rounded-xl border text-xs flex items-start gap-2.5 ${
+                      (sheetPreview.validCallableLeads ?? sheetPreview.validLeads.filter(l => l.is_callable).length) === 0 
+                        ? 'bg-rose-50 border-rose-200 text-rose-900' 
+                        : 'bg-amber-50 border-amber-200 text-amber-900'
+                    }`}>
+                      <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-600" />
+                      <div>
+                        <span className="font-bold">
+                          {(sheetPreview.validCallableLeads ?? sheetPreview.validLeads.filter(l => l.is_callable).length) === 0
+                            ? 'No Callable Leads Found in Current Mapping!'
+                            : 'Calling Safety Active:'}
+                        </span>{' '}
+                        {(sheetPreview.validCallableLeads ?? sheetPreview.validLeads.filter(l => l.is_callable).length) === 0
+                          ? 'None of the rows contain a recognized phone number. Click "Column Mapping" above to match the column that contains phone numbers.'
+                          : `${sheetPreview.excludedLeadsCount ?? sheetPreview.validLeads.filter(l => !l.is_callable).length} rows without valid phone numbers are marked as excluded and will NOT be dialed by the auto-caller.`}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Table with Status Badges */}
                   <div className="overflow-x-auto max-h-64 border border-slate-200 rounded-xl">
                     <table className="w-full text-left text-xs text-slate-700">
                       <thead className="bg-slate-100 text-slate-600 font-semibold uppercase tracking-wider sticky top-0">
@@ -928,6 +1130,7 @@ Your goal on this phone call:
                           <th className="px-3 py-2">#</th>
                           <th className="px-3 py-2">Lead Name</th>
                           <th className="px-3 py-2">Phone Number</th>
+                          <th className="px-3 py-2">Status</th>
                           <th className="px-3 py-2">Email</th>
                           <th className="px-3 py-2">Interest</th>
                           <th className="px-3 py-2">Notes</th>
@@ -935,10 +1138,21 @@ Your goal on this phone call:
                       </thead>
                       <tbody className="divide-y divide-slate-200 bg-white">
                         {sheetPreview.validLeads.map((l, idx) => (
-                          <tr key={idx} className="hover:bg-slate-50">
-                            <td className="px-3 py-2 font-mono text-slate-400">{idx + 1}</td>
+                          <tr key={idx} className={`hover:bg-slate-50 ${!l.is_callable ? 'bg-slate-50/50 opacity-70' : ''}`}>
+                            <td className="px-3 py-2 font-mono text-slate-400">{l.rowIndex ?? idx + 1}</td>
                             <td className="px-3 py-2 font-medium text-slate-900">{l.name}</td>
-                            <td className="px-3 py-2 font-mono text-sky-700">{l.phone_number}</td>
+                            <td className="px-3 py-2 font-mono text-sky-700">{l.phone_number || <span className="text-rose-500 italic">None</span>}</td>
+                            <td className="px-3 py-2">
+                              {l.is_callable ? (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                                  <Check className="w-2.5 h-2.5" /> Callable
+                                </span>
+                              ) : (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-800" title={l.exclusion_reason || 'Missing phone'}>
+                                  <XCircle className="w-2.5 h-2.5" /> Excluded
+                                </span>
+                              )}
+                            </td>
                             <td className="px-3 py-2 text-slate-500">{l.email || '-'}</td>
                             <td className="px-3 py-2 text-slate-600">{l.interest || 'Guitar Lessons'}</td>
                             <td className="px-3 py-2 text-slate-400 truncate max-w-xs">{l.notes || '-'}</td>
@@ -1014,7 +1228,7 @@ Your goal on this phone call:
               <div className="pt-2">
                 <button
                   type="button"
-                  disabled={!sheetPreview || sheetPreview.validLeads.length === 0 || launchingCampaign}
+                  disabled={!sheetPreview || (sheetPreview.validCallableLeads ?? sheetPreview.validLeads.filter(l => l.is_callable).length) === 0 || launchingCampaign}
                   onClick={handleLaunchCampaign}
                   className="w-full flex items-center justify-center gap-2 py-3 px-4 bg-sky-600 hover:bg-sky-700 disabled:opacity-50 text-white font-semibold text-sm rounded-xl shadow-md shadow-sky-600/20 transition"
                 >
@@ -1023,8 +1237,13 @@ Your goal on this phone call:
                   ) : (
                     <PhoneOutgoing className="w-4 h-4" />
                   )}
-                  Launch Calling Campaign ({sheetPreview ? sheetPreview.validLeads.length : 0} Leads)
+                  Launch Calling Campaign ({sheetPreview ? (sheetPreview.validCallableLeads ?? sheetPreview.validLeads.filter(l => l.is_callable).length) : 0} Callable Leads)
                 </button>
+                {sheetPreview && (sheetPreview.validCallableLeads ?? sheetPreview.validLeads.filter(l => l.is_callable).length) === 0 && (
+                  <p className="text-[11px] text-rose-600 mt-1.5 text-center font-medium">
+                    Cannot launch: 0 callable leads. Please configure column mapping to match phone numbers.
+                  </p>
+                )}
               </div>
             </div>
           </div>
@@ -1346,7 +1565,7 @@ Your goal on this phone call:
 
               <button
                 type="button"
-                onClick={() => selectedCampaignId && loadLeads(selectedCampaignId)}
+                onClick={() => loadLeads(selectedCampaignId)}
                 className="p-1.5 text-slate-500 hover:text-slate-800 border border-slate-200 rounded-lg bg-slate-50 hover:bg-slate-100"
                 title="Refresh leads"
               >
@@ -2481,6 +2700,212 @@ Your goal on this phone call:
                 className="px-4 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: CONFIRM REMOVE UPLOADED FILE */}
+      {confirmRemoveFileModal && (
+        <div 
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmRemoveFileModal(false); }}
+          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-2xl max-w-md w-full p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div className="w-12 h-12 rounded-2xl bg-rose-50 text-rose-600 flex items-center justify-center">
+              <Trash2 className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-slate-900">Remove Uploaded Spreadsheet?</h3>
+              <p className="text-xs text-slate-500 mt-1 leading-relaxed">
+                This will remove the current uploaded file ({sheetPreview?.fileName}), reset detected columns and column mappings, and clear temporary imported leads from this campaign setup screen.
+              </p>
+              <p className="text-[11px] text-slate-400 mt-2 bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                <strong>Note:</strong> Contacts already saved to your permanent CRM database will NOT be affected.
+              </p>
+            </div>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setConfirmRemoveFileModal(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+              >
+                Keep File
+              </button>
+              <button
+                type="button"
+                onClick={handleRemoveUploadedFile}
+                className="px-4 py-2 text-xs font-bold text-white bg-rose-600 hover:bg-rose-700 rounded-lg shadow-sm"
+              >
+                Yes, Remove File
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: COLUMN MAPPING INTERFACE */}
+      {mappingModalOpen && sheetPreview && (
+        <div 
+          onClick={(e) => { if (e.target === e.currentTarget) setMappingModalOpen(false); }}
+          className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-sm flex items-center justify-center p-4 animate-in fade-in duration-150"
+        >
+          <div className="bg-white rounded-2xl max-w-lg w-full p-6 shadow-2xl border border-slate-200 space-y-4 max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div className="flex items-center gap-2 text-slate-900 font-bold text-base">
+                <Sliders className="w-5 h-5 text-sky-600" />
+                Configure Spreadsheet Column Mapping
+              </div>
+              <button
+                onClick={() => setMappingModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500 leading-relaxed">
+              If your Excel sheet has title headers, metadata rows, or unique column names, adjust the header row index and map each field to the matching column.
+            </p>
+
+            <div className="p-3 bg-sky-50/70 border border-sky-100 rounded-xl space-y-2">
+              <label className="block text-xs font-bold text-sky-900">
+                Header Row Index (0-indexed)
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="number"
+                  min="0"
+                  max="15"
+                  value={headerRowIdx}
+                  onChange={(e) => setHeaderRowIdx(Math.max(0, parseInt(e.target.value) || 0))}
+                  className="w-24 px-3 py-1.5 border border-sky-200 rounded-lg text-xs font-mono font-bold bg-white focus:outline-none focus:ring-2 focus:ring-sky-500"
+                />
+                <span className="text-[11px] text-sky-700">
+                  (Row {headerRowIdx + 1} contains your column titles like Name, Phone, etc.)
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Full Name Column <span className="text-rose-500">*</span>
+                </label>
+                <select
+                  value={currentMapping.nameCol}
+                  onChange={(e) => setCurrentMapping(prev => ({ ...prev, nameCol: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-sky-500 bg-white"
+                >
+                  <option value="">-- Select Column --</option>
+                  {sheetPreview.detectedColumns.map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Phone Number Column <span className="text-rose-500">* (Required for calling)</span>
+                </label>
+                <select
+                  value={currentMapping.phoneCol}
+                  onChange={(e) => setCurrentMapping(prev => ({ ...prev, phoneCol: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-sky-500 bg-white font-mono font-medium"
+                >
+                  <option value="">-- Select Column --</option>
+                  {sheetPreview.detectedColumns.map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Email Column (Optional)
+                </label>
+                <select
+                  value={currentMapping.emailCol}
+                  onChange={(e) => setCurrentMapping(prev => ({ ...prev, emailCol: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-sky-500 bg-white"
+                >
+                  <option value="">-- None / Skip --</option>
+                  {sheetPreview.detectedColumns.map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Interest / Course Column (Optional)
+                </label>
+                <select
+                  value={currentMapping.interestCol}
+                  onChange={(e) => setCurrentMapping(prev => ({ ...prev, interestCol: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-sky-500 bg-white"
+                >
+                  <option value="">-- None / Default --</option>
+                  {sheetPreview.detectedColumns.map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Notes / Source Column (Optional)
+                </label>
+                <select
+                  value={currentMapping.notesCol}
+                  onChange={(e) => setCurrentMapping(prev => ({ ...prev, notesCol: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-sky-500 bg-white"
+                >
+                  <option value="">-- None / Skip --</option>
+                  {sheetPreview.detectedColumns.map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Consent / Opt-in Column (Optional)
+                </label>
+                <select
+                  value={currentMapping.consentCol}
+                  onChange={(e) => setCurrentMapping(prev => ({ ...prev, consentCol: e.target.value }))}
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-xs focus:ring-2 focus:ring-sky-500 bg-white"
+                >
+                  <option value="">-- None (Assume Consent via Campaign Confirmation) --</option>
+                  {sheetPreview.detectedColumns.map(col => (
+                    <option key={col} value={col}>{col}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end gap-2 pt-3 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setMappingModalOpen(false)}
+                className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={applyingMapping || !currentMapping.phoneCol}
+                onClick={handleApplyMapping}
+                className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:opacity-50 rounded-lg shadow-sm flex items-center gap-1.5"
+              >
+                {applyingMapping ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Check className="w-3.5 h-3.5" />
+                )}
+                Apply Mapping & Re-validate
               </button>
             </div>
           </div>

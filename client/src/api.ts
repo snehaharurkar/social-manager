@@ -9,7 +9,23 @@ import type {
   CallingCampaign,
   CallingSettings,
   ParsedSheetPreview,
-  FollowUpsResponse
+  FollowUpsResponse,
+  CrmLead,
+  CrmStats,
+  BrandKnowledgeItem,
+  BrandVoiceSettings,
+  AnalyticsOverview,
+  AnalyticsTimeseriesPoint,
+  AutomationExecution,
+  AutomationTemplate,
+  AppNotification,
+  MultiPublishRequest,
+  MultiPublishResult,
+  YouTubeAnalyticsData,
+  InstagramAnalyticsData,
+  TelegramAnalyticsData,
+  UnifiedAnalyticsData,
+  TelegramChannelVerification
 } from './types';
 
 export const getApiBase = (): string => {
@@ -410,6 +426,17 @@ export const api = {
     return data.bot;
   },
 
+  async verifyTelegramChannel(channelId: string, botToken?: string, saveIfValid: boolean = false): Promise<TelegramChannelVerification> {
+    const res = await fetch(`${getApiBase()}/telegram/verify-channel`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channelId, botToken, saveIfValid })
+    });
+    const data = await safeJson(res, 'Failed to verify Telegram channel');
+    if (!data.success) throw new Error(data.error || 'Failed to verify Telegram channel');
+    return data.verification;
+  },
+
   async getTelegramLeads(status = 'all', search = ''): Promise<any[]> {
     const params = new URLSearchParams();
     if (status && status !== 'all') params.append('status', status);
@@ -536,10 +563,20 @@ export const api = {
   },
 
   async getCallingCampaign(id: number): Promise<CallingCampaign> {
-    const res = await fetch(`${API_BASE}/calling/campaigns/${id}`);
-    const data = await res.json();
+    const res = await fetch(`${getApiBase()}/calling/campaigns/${id}`);
+    const data = await safeJson(res, 'Campaign not found');
     if (!data.success) throw new Error(data.error || 'Campaign not found');
     return data.campaign;
+  },
+
+  async getAllCallingLeads(filter?: { status?: string; search?: string }): Promise<CallingLead[]> {
+    const params = new URLSearchParams();
+    if (filter?.status) params.append('status', filter.status);
+    if (filter?.search) params.append('search', filter.search);
+
+    const res = await fetch(`${getApiBase()}/calling/leads?${params.toString()}`);
+    const data = await safeJson(res, 'Failed to fetch calling leads');
+    return data.leads || [];
   },
 
   async getCampaignLeads(campaignId: number, filter?: { status?: string; search?: string }): Promise<CallingLead[]> {
@@ -547,8 +584,8 @@ export const api = {
     if (filter?.status) params.append('status', filter.status);
     if (filter?.search) params.append('search', filter.search);
 
-    const res = await fetch(`${API_BASE}/calling/campaigns/${campaignId}/leads?${params.toString()}`);
-    const data = await res.json();
+    const res = await fetch(`${getApiBase()}/calling/campaigns/${campaignId}/leads?${params.toString()}`);
+    const data = await safeJson(res, 'Failed to fetch campaign leads');
     return data.leads || [];
   },
 
@@ -665,5 +702,276 @@ export const api = {
     const json = await safeJson(res, 'Failed to place direct call');
     if (!json.success) throw new Error(json.error || 'Failed to place direct call');
     return json;
+  },
+
+  // CRM Unified Leads
+  async getCrmLeads(filter?: { platform?: string; stage?: string; search?: string }): Promise<{ total: number; leads: CrmLead[] }> {
+    const params = new URLSearchParams();
+    if (filter?.platform) params.append('platform', filter.platform);
+    if (filter?.stage) params.append('stage', filter.stage);
+    if (filter?.search) params.append('search', filter.search);
+    const res = await fetch(`${getApiBase()}/crm/leads?${params.toString()}`);
+    return await safeJson(res, 'Failed to fetch CRM leads');
+  },
+
+  async getCrmStats(): Promise<CrmStats> {
+    const res = await fetch(`${getApiBase()}/crm/stats`);
+    return await safeJson(res, 'Failed to fetch CRM stats');
+  },
+
+  async updateCrmLead(platform: string, id: string, data: { stage?: string; status?: string; notes?: string; tags?: string; follow_up_date?: string | null }): Promise<void> {
+    const res = await fetch(`${getApiBase()}/crm/leads/${platform}/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const json = await safeJson(res, 'Failed to update CRM lead');
+    if (!json.success) throw new Error(json.error || 'Failed to update lead');
+  },
+
+  async deleteCrmLead(platform: string, id: string): Promise<void> {
+    const res = await fetch(`${getApiBase()}/crm/leads/${platform}/${id}`, {
+      method: 'DELETE'
+    });
+    const json = await safeJson(res, 'Failed to delete CRM lead');
+    if (!json.success) throw new Error(json.error || 'Failed to delete lead');
+  },
+
+  getCrmExportUrl(): string {
+    return `${getApiBase()}/crm/export`;
+  },
+
+  // Brand Voice & Knowledge Base
+  async getBrandKnowledge(category?: string): Promise<{ items: BrandKnowledgeItem[]; brandVoice: BrandVoiceSettings }> {
+    const url = category && category !== 'all' ? `${getApiBase()}/brand/knowledge?category=${category}` : `${getApiBase()}/brand/knowledge`;
+    const res = await fetch(url);
+    return await safeJson(res, 'Failed to fetch brand knowledge');
+  },
+
+  async addBrandKnowledge(data: { title: string; category: string; content: string; tags?: string }): Promise<BrandKnowledgeItem> {
+    const res = await fetch(`${getApiBase()}/brand/knowledge`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const json = await safeJson(res, 'Failed to add knowledge item');
+    if (!json.success) throw new Error(json.error || 'Failed to add knowledge item');
+    return json.item;
+  },
+
+  async updateBrandKnowledge(id: number, data: Partial<BrandKnowledgeItem>): Promise<BrandKnowledgeItem> {
+    const res = await fetch(`${getApiBase()}/brand/knowledge/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const json = await safeJson(res, 'Failed to update knowledge item');
+    if (!json.success) throw new Error(json.error || 'Failed to update knowledge item');
+    return json.item;
+  },
+
+  async deleteBrandKnowledge(id: number): Promise<void> {
+    const res = await fetch(`${getApiBase()}/brand/knowledge/${id}`, {
+      method: 'DELETE'
+    });
+    const json = await safeJson(res, 'Failed to delete knowledge item');
+    if (!json.success) throw new Error(json.error || 'Failed to delete knowledge item');
+  },
+
+  async saveBrandVoice(settings: Partial<BrandVoiceSettings>): Promise<void> {
+    const res = await fetch(`${getApiBase()}/brand/voice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(settings)
+    });
+    const json = await safeJson(res, 'Failed to save brand voice');
+    if (!json.success) throw new Error(json.error || 'Failed to save brand voice');
+  },
+
+  // Analytics Engine
+  async getAnalyticsOverview(range: string = '30d', start?: string, end?: string): Promise<AnalyticsOverview> {
+    const q = new URLSearchParams({ range });
+    if (start && end) { q.set('start', start); q.set('end', end); }
+    const res = await fetch(`${getApiBase()}/analytics/overview?${q.toString()}`);
+    const json = await safeJson(res, 'Failed to fetch analytics overview');
+    return json.summary;
+  },
+
+  async getAnalyticsTimeseries(range: string = '7d'): Promise<AnalyticsTimeseriesPoint[]> {
+    const q = new URLSearchParams({ range });
+    const res = await fetch(`${getApiBase()}/analytics/timeseries?${q.toString()}`);
+    const json = await safeJson(res, 'Failed to fetch timeseries');
+    return json.timeseries || [];
+  },
+
+  async getAnalyticsPlatforms(): Promise<{ channels: any[]; unsupportedMetricsNotice: string }> {
+    const res = await fetch(`${getApiBase()}/analytics/platforms`);
+    return await safeJson(res, 'Failed to fetch platform metrics');
+  },
+
+  // Automations & Simulation Sandbox
+  async getAutomationExecutions(status?: string): Promise<AutomationExecution[]> {
+    const url = status && status !== 'all' ? `${getApiBase()}/automations/executions?status=${status}` : `${getApiBase()}/automations/executions`;
+    const res = await fetch(url);
+    const json = await safeJson(res, 'Failed to fetch automation executions');
+    return json.executions || [];
+  },
+
+  async getAutomationTemplates(): Promise<AutomationTemplate[]> {
+    const res = await fetch(`${getApiBase()}/automations/templates`);
+    const json = await safeJson(res, 'Failed to fetch automation templates');
+    return json.templates || [];
+  },
+
+  async testAutomation(data: { message: string; platform?: string; authorName?: string }): Promise<{ matched: boolean; rule?: any; usedAi?: boolean; finalReply?: string; actions: string[]; executionTimeMs: number }> {
+    const res = await fetch(`${getApiBase()}/automations/test`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    return await safeJson(res, 'Failed to run automation simulation');
+  },
+
+  async clearAutomationExecutions(): Promise<void> {
+    const res = await fetch(`${getApiBase()}/automations/clear-executions`, {
+      method: 'POST'
+    });
+    await safeJson(res, 'Failed to clear executions');
+  },
+
+  // AI Copilot
+  async askCopilot(prompt: string): Promise<{ reply: string; groundedData: any }> {
+    const res = await fetch(`${getApiBase()}/copilot/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ prompt })
+    });
+    return await safeJson(res, 'Copilot failed to respond');
+  },
+
+  // ----------------------------------------------------
+  // In-App Notifications
+  // ----------------------------------------------------
+  async getNotifications(params?: { category?: string; is_read?: string; limit?: number; offset?: number }): Promise<{ notifications: AppNotification[]; unreadCount: number; totalCount: number }> {
+    const query = new URLSearchParams();
+    if (params?.category && params.category !== 'all') query.set('category', params.category);
+    if (params?.is_read !== undefined && params.is_read !== '') query.set('is_read', params.is_read);
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.offset) query.set('offset', String(params.offset));
+
+    const qs = query.toString();
+    const url = qs ? `${getApiBase()}/notifications?${qs}` : `${getApiBase()}/notifications`;
+    const res = await fetch(url);
+    const json = await safeJson(res, 'Failed to fetch notifications');
+    return {
+      notifications: json.notifications || [],
+      unreadCount: json.unreadCount || 0,
+      totalCount: json.totalCount || 0
+    };
+  },
+
+  async markNotificationRead(id: number, is_read: number = 1): Promise<void> {
+    const res = await fetch(`${getApiBase()}/notifications/${id}/read`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ is_read })
+    });
+    await safeJson(res, 'Failed to update notification');
+  },
+
+  async markAllNotificationsRead(): Promise<void> {
+    const res = await fetch(`${getApiBase()}/notifications/mark-all-read`, {
+      method: 'POST'
+    });
+    await safeJson(res, 'Failed to mark all as read');
+  },
+
+  async deleteNotification(id: number): Promise<void> {
+    const res = await fetch(`${getApiBase()}/notifications/${id}`, {
+      method: 'DELETE'
+    });
+    await safeJson(res, 'Failed to delete notification');
+  },
+
+  async clearNotifications(onlyRead: boolean = false): Promise<void> {
+    const url = onlyRead ? `${getApiBase()}/notifications?only_read=true` : `${getApiBase()}/notifications`;
+    const res = await fetch(url, { method: 'DELETE' });
+    await safeJson(res, 'Failed to clear notifications');
+  },
+
+  // ----------------------------------------------------
+  // Multi-Platform Publishing
+  // ----------------------------------------------------
+  async multiPublishPosts(data: MultiPublishRequest): Promise<MultiPublishResult> {
+    const res = await fetch(`${getApiBase()}/posts/multi`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const json = await safeJson(res, 'Failed to execute multi-platform publishing');
+    if (!json.success && !json.batchId) throw new Error(json.error || 'Publishing failed');
+    return json;
+  },
+
+  async retryFailedBatch(batchId: string): Promise<any> {
+    const res = await fetch(`${getApiBase()}/posts/retry-batch/${batchId}`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Failed to retry batch');
+  },
+
+  // ----------------------------------------------------
+  // Calling Agent: Column Mapping & Sheet Cleanup
+  // ----------------------------------------------------
+  async applyCallingColumnMapping(data: { filePath: string; mapping: any; headerRowIndex?: number }): Promise<ParsedSheetPreview> {
+    const res = await fetch(`${getApiBase()}/calling/apply-mapping`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const json = await safeJson(res, 'Failed to apply column mapping');
+    if (!json.success) throw new Error(json.error || 'Failed to apply column mapping');
+    return json;
+  },
+
+  async cleanupUploadedSheet(filePath: string): Promise<void> {
+    try {
+      await fetch(`${getApiBase()}/calling/cleanup-upload`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filePath })
+      });
+    } catch {}
+  },
+
+  // ----------------------------------------------------
+  // Platform & Unified Analytics
+  // ----------------------------------------------------
+  async getYouTubeAnalytics(range: string = '30d', start?: string, end?: string): Promise<YouTubeAnalyticsData> {
+    const q = new URLSearchParams({ range });
+    if (start && end) { q.set('start', start); q.set('end', end); }
+    const res = await fetch(`${getApiBase()}/analytics/youtube?${q.toString()}`);
+    return await safeJson(res, 'Failed to fetch YouTube analytics');
+  },
+
+  async getInstagramAnalytics(range: string = '30d', start?: string, end?: string): Promise<InstagramAnalyticsData> {
+    const q = new URLSearchParams({ range });
+    if (start && end) { q.set('start', start); q.set('end', end); }
+    const res = await fetch(`${getApiBase()}/analytics/instagram?${q.toString()}`);
+    return await safeJson(res, 'Failed to fetch Instagram analytics');
+  },
+
+  async getTelegramAnalytics(range: string = '30d', start?: string, end?: string): Promise<TelegramAnalyticsData> {
+    const q = new URLSearchParams({ range });
+    if (start && end) { q.set('start', start); q.set('end', end); }
+    const res = await fetch(`${getApiBase()}/analytics/telegram?${q.toString()}`);
+    return await safeJson(res, 'Failed to fetch Telegram analytics');
+  },
+
+  async getUnifiedAnalytics(range: string = '30d', start?: string, end?: string): Promise<UnifiedAnalyticsData> {
+    const q = new URLSearchParams({ range });
+    if (start && end) { q.set('start', start); q.set('end', end); }
+    const res = await fetch(`${getApiBase()}/analytics/unified?${q.toString()}`);
+    return await safeJson(res, 'Failed to fetch unified analytics');
   }
 };

@@ -21,6 +21,12 @@ const whatsappRoutes = require('./routes/whatsapp');
 const instagramLeadsRoutes = require('./routes/instagram_leads');
 const telegramRoutes = require('./routes/telegram');
 const callingRoutes = require('./routes/calling');
+const crmRoutes = require('./routes/crm');
+const brandRoutes = require('./routes/brand');
+const analyticsRoutes = require('./routes/analytics');
+const automationsRoutes = require('./routes/automations');
+const copilotRoutes = require('./routes/copilot');
+const notificationsRoutes = require('./routes/notifications');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -62,6 +68,12 @@ app.use('/api/whatsapp', whatsappRoutes);
 app.use('/api/instagram', instagramLeadsRoutes);
 app.use('/api/telegram', telegramRoutes);
 app.use('/api/calling', callingRoutes);
+app.use('/api/crm', crmRoutes);
+app.use('/api/brand', brandRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/automations', automationsRoutes);
+app.use('/api/copilot', copilotRoutes);
+app.use('/api/notifications', notificationsRoutes);
 
 // Global JSON & Express Error Handler
 app.use((err, req, res, next) => {
@@ -90,6 +102,14 @@ app.use('/uploads', express.static(uploadsDir));
 // Healthcheck
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
+});
+
+// Fallback for API routes that do not match: ALWAYS return JSON 404, never index.html!
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ 
+    success: false, 
+    error: `API endpoint not found: ${req.method} ${req.originalUrl}` 
+  });
 });
 
 // Serve Vite frontend in production if built

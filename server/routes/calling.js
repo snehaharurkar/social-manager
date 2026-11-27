@@ -3,9 +3,10 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
-const { db, getSetting, setSetting, logActivity } = require('../db');
+const { db, getSetting, setSetting, logActivity, createNotification } = require('../db');
 const {
   parseExcelFile,
+  inspectAndParseSheet,
   createCampaign,
   dispatchCallToLead,
   simulateCallToLead,
@@ -46,7 +47,7 @@ const upload = multer({
   }
 });
 
-// 1. Upload & Parse Excel / CSV Sheet
+// 1. Upload & Inspect Excel / CSV Sheet
 router.post('/upload-sheet', upload.single('sheet'), async (req, res) => {
   try {
     if (!req.file) {
@@ -54,7 +55,7 @@ router.post('/upload-sheet', upload.single('sheet'), async (req, res) => {
     }
 
     const filePath = req.file.path;
-    const parsedData = parseExcelFile(filePath);
+    const parsedData = inspectAndParseSheet(filePath);
 
     res.json({
       success: true,
@@ -63,12 +64,72 @@ router.post('/upload-sheet', upload.single('sheet'), async (req, res) => {
       filePath,
       sheetName: parsedData.sheetName,
       totalRows: parsedData.totalRows,
+      validCallableLeads: parsedData.validCallableLeads,
+      excludedLeadsCount: parsedData.excludedLeadsCount,
+      missingPhoneCount: parsedData.missingPhoneCount,
+      missingConsentCount: parsedData.missingConsentCount,
+      duplicateCount: parsedData.duplicateCount,
+      skippedRowsCount: parsedData.skippedRowsCount,
       detectedColumns: parsedData.detectedColumns,
+      headerRowIndex: parsedData.headerRowIndex,
+      suggestedMapping: parsedData.suggestedMapping,
+      currentMapping: parsedData.currentMapping,
+      sampleRows: parsedData.sampleRows,
       validLeads: parsedData.validLeads
     });
   } catch (err) {
     console.error('Error parsing uploaded sheet:', err);
     res.status(500).json({ success: false, error: err.message || 'Failed to parse Excel sheet.' });
+  }
+});
+
+// 1.1 Apply Custom Column Mapping & Re-evaluate Leads
+router.post('/apply-mapping', (req, res) => {
+  try {
+    const { filePath, mapping, headerRowIndex } = req.body;
+    if (!filePath) {
+      return res.status(400).json({ success: false, error: 'filePath is required to re-map columns.' });
+    }
+
+    const parsedData = inspectAndParseSheet(filePath, mapping, headerRowIndex);
+
+    res.json({
+      success: true,
+      sheetName: parsedData.sheetName,
+      totalRows: parsedData.totalRows,
+      validCallableLeads: parsedData.validCallableLeads,
+      excludedLeadsCount: parsedData.excludedLeadsCount,
+      missingPhoneCount: parsedData.missingPhoneCount,
+      missingConsentCount: parsedData.missingConsentCount,
+      duplicateCount: parsedData.duplicateCount,
+      skippedRowsCount: parsedData.skippedRowsCount,
+      detectedColumns: parsedData.detectedColumns,
+      headerRowIndex: parsedData.headerRowIndex,
+      suggestedMapping: parsedData.suggestedMapping,
+      currentMapping: parsedData.currentMapping,
+      sampleRows: parsedData.sampleRows,
+      validLeads: parsedData.validLeads
+    });
+  } catch (err) {
+    console.error('Error applying column mapping:', err);
+    res.status(500).json({ success: false, error: err.message || 'Failed to apply column mapping.' });
+  }
+});
+
+// 1.2 Remove / Cleanup Uploaded Temporary Spreadsheet
+router.post('/cleanup-upload', (req, res) => {
+  try {
+    const { filePath } = req.body;
+    if (filePath) {
+      const normalized = path.normalize(filePath);
+      // Safety: Only delete files located in the uploads directory
+      if (normalized.includes('uploads') && fs.existsSync(normalized)) {
+        try { fs.unlinkSync(normalized); } catch {}
+      }
+    }
+    res.json({ success: true, message: 'Uploaded file cleaned up.' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -81,11 +142,23 @@ router.post('/campaigns', (req, res) => {
     }
 
     const result = createCampaign(title, fileName, leads, customScript, delaySeconds);
+
+    createNotification(
+      `Calling Campaign Created`,
+      `Campaign "${title}" created with ${result.totalLeads} leads (${result.callableLeads || result.totalLeads} callable).`,
+      'calling',
+      'info',
+      'calling',
+      result.campaignId
+    );
+
     res.json({
       success: true,
       campaignId: result.campaignId,
       totalLeads: result.totalLeads,
-      message: `Campaign created with ${result.totalLeads} leads!`
+      callableLeads: result.callableLeads,
+      excludedLeads: result.excludedLeads,
+      message: `Campaign created with ${result.callableLeads || result.totalLeads} callable leads!`
     });
   } catch (err) {
     console.error('Error creating calling campaign:', err);
@@ -189,6 +262,38 @@ router.post('/leads/:id/call', async (req, res) => {
     if (err.message && err.message.includes('not found')) {
       return res.status(404).json({ success: false, error: err.message });
     }
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// 6a. Get All Leads (Across campaigns or filtered)
+router.get('/leads', (req, res) => {
+  try {
+    const { campaign_id, status, search, limit = 200 } = req.query;
+    let query = 'SELECT * FROM calling_leads WHERE 1=1';
+    const params = [];
+
+    if (campaign_id) {
+      query += ' AND campaign_id = ?';
+      params.push(Number(campaign_id));
+    }
+    if (status && status !== 'all') {
+      query += ' AND call_status = ?';
+      params.push(status);
+    }
+    if (search && search.trim()) {
+      query += ' AND (name LIKE ? OR phone_number LIKE ? OR email LIKE ? OR interest LIKE ?)';
+      const s = `%${search.trim()}%`;
+      params.push(s, s, s, s);
+    }
+
+    query += ' ORDER BY id DESC LIMIT ?';
+    params.push(Number(limit));
+
+    const leads = db.prepare(query).all(...params);
+    res.json({ success: true, leads });
+  } catch (err) {
+    console.error('Error fetching leads:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });

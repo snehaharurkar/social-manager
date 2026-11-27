@@ -537,9 +537,12 @@ export const ChannelsView: React.FC<ChannelsViewProps> = ({
                   type="text"
                   value={telegramChannel}
                   onChange={(e) => setTelegramChannel(e.target.value)}
-                  placeholder="e.g. @mychannel or -100123456789"
+                  placeholder="e.g. -1001234567890 or @mychannel"
                   className="w-full px-3 py-2 text-xs bg-slate-50 border border-slate-200 rounded-xl focus:bg-white focus:outline-none font-mono"
                 />
+                <p className="text-[11px] text-slate-500 mt-1.5 leading-relaxed bg-slate-50 p-2 rounded-lg border border-slate-100">
+                  💡 <strong>Private Channel Tip:</strong> For private channels (like "For real"), forward any message to <strong>@userinfobot</strong> or <strong>@getmyid_bot</strong> to get the ID (starts with <code>-100</code>). You can also paste a post link (e.g. <code>t.me/c/...</code>) or manage & verify channels directly in the <strong>Telegram & Leads</strong> tab.
+                </p>
               </div>
 
               <div className="flex items-center justify-end gap-3 pt-2">

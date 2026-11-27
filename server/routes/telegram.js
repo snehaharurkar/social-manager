@@ -3,6 +3,7 @@ const router = express.Router();
 const { db, getSetting, setSetting, logActivity } = require('../db');
 const { 
   verifyTelegramBot, 
+  verifyTelegramChannel,
   sendTelegramMessage, 
   handleIncomingTelegramMessage, 
   startTelegramPolling, 
@@ -15,6 +16,38 @@ router.post('/verify', async (req, res) => {
     const { botToken } = req.body;
     const bot = await verifyTelegramBot(botToken);
     res.json({ success: true, bot });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/telegram/verify-channel (Verify channel access and post permissions via getChat & getChatMember)
+router.post('/verify-channel', async (req, res) => {
+  try {
+    const { channelId, botToken, saveIfValid } = req.body;
+    if (!channelId || !String(channelId).trim()) {
+      return res.status(400).json({ success: false, error: 'Telegram Channel ID is required' });
+    }
+
+    const verification = await verifyTelegramChannel(channelId.trim(), botToken ? botToken.trim() : null);
+
+    if (saveIfValid) {
+      setSetting('TELEGRAM_CHANNEL_ID', verification.chatId);
+
+      const existingChannel = db.prepare("SELECT id, metadata FROM channels WHERE platform = 'telegram'").get();
+      if (existingChannel) {
+        let meta = {};
+        try { meta = JSON.parse(existingChannel.metadata || '{}'); } catch {}
+        meta.targetChatId = verification.chatId;
+        meta.channelTitle = verification.title;
+        meta.verifiedAt = new Date().toISOString();
+        db.prepare("UPDATE channels SET platform_id = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run(verification.chatId, JSON.stringify(meta), existingChannel.id);
+      }
+      logActivity('telegram', 'channel_verified', 'success', `Verified Telegram channel "${verification.title}" (${verification.chatId})`);
+    }
+
+    res.json({ success: true, verification });
   } catch (err) {
     res.status(400).json({ success: false, error: err.message });
   }

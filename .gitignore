@@ -5,6 +5,7 @@ client/node_modules/
 # Production Builds
 client/dist/
 dist/
+*.tsbuildinfo
 
 # Local Databases, Uploads & Sessions (Critical: Protects Private Leads, Keys & Media)
 data/*.db

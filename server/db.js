@@ -217,12 +217,61 @@ db.exec(`
     outcome TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  CREATE TABLE IF NOT EXISTS automation_executions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rule_id INTEGER,
+    rule_name TEXT,
+    platform TEXT NOT NULL,
+    trigger_type TEXT NOT NULL,
+    input_content TEXT,
+    author_name TEXT,
+    status TEXT NOT NULL, -- 'success' | 'failed' | 'simulated' | 'skipped'
+    action_taken TEXT,
+    output_content TEXT,
+    execution_time_ms INTEGER DEFAULT 0,
+    error_details TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS brand_knowledge (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    category TEXT DEFAULT 'faq', -- 'faq' | 'curriculum' | 'policy' | 'voice'
+    content TEXT NOT NULL,
+    tags TEXT,
+    is_active INTEGER DEFAULT 1,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS notifications (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    category TEXT DEFAULT 'general', -- 'publishing' | 'scheduler' | 'account' | 'sync' | 'automation' | 'lead' | 'calling' | 'system'
+    level TEXT DEFAULT 'info', -- 'info' | 'success' | 'warning' | 'error'
+    is_read INTEGER DEFAULT 0,
+    link_tab TEXT,
+    link_id TEXT,
+    metadata_json TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 // Safe migrations for newly added columns
+try { db.exec("ALTER TABLE scheduled_posts ADD COLUMN batch_id TEXT"); } catch {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_notifications_unread ON notifications(is_read, created_at)"); } catch {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_notifications_category ON notifications(category)"); } catch {}
 try { db.exec("ALTER TABLE scheduled_posts ADD COLUMN privacy_status TEXT DEFAULT 'public'"); } catch {}
 try { db.exec("ALTER TABLE scheduled_posts ADD COLUMN media_type TEXT"); } catch {}
 try { db.exec("ALTER TABLE scheduled_posts ADD COLUMN published_url TEXT"); } catch {}
+try { db.exec("ALTER TABLE scheduled_posts ADD COLUMN is_draft INTEGER DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE scheduled_posts ADD COLUMN retry_count INTEGER DEFAULT 0"); } catch {}
+try { db.exec("ALTER TABLE scheduled_posts ADD COLUMN tags TEXT"); } catch {}
+try { db.exec("ALTER TABLE rules ADD COLUMN description TEXT"); } catch {}
+try { db.exec("ALTER TABLE rules ADD COLUMN conditions_json TEXT"); } catch {}
+try { db.exec("ALTER TABLE rules ADD COLUMN actions_json TEXT"); } catch {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_wa_messages_phone ON whatsapp_messages(phone_number)"); } catch {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_wa_contacts_phone ON whatsapp_contacts(phone_number)"); } catch {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_ig_leads_username ON instagram_leads(ig_username)"); } catch {}
@@ -232,10 +281,49 @@ try { db.exec("CREATE INDEX IF NOT EXISTS idx_tg_messages_chat ON telegram_messa
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_calling_leads_campaign ON calling_leads(campaign_id)"); } catch {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_calling_leads_phone ON calling_leads(phone_number)"); } catch {}
 try { db.exec("CREATE INDEX IF NOT EXISTS idx_calling_leads_followup ON calling_leads(follow_up_date)"); } catch {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_automation_exec_created ON automation_executions(created_at)"); } catch {}
+try { db.exec("CREATE INDEX IF NOT EXISTS idx_brand_knowledge_cat ON brand_knowledge(category)"); } catch {}
 try { db.exec("ALTER TABLE calling_leads ADD COLUMN external_call_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE calling_leads ADD COLUMN recording_url TEXT"); } catch {}
 try { db.exec("ALTER TABLE call_logs ADD COLUMN external_call_id TEXT"); } catch {}
 try { db.exec("ALTER TABLE call_logs ADD COLUMN recording_url TEXT"); } catch {}
+
+// Seed brand knowledge if empty
+try {
+  const kbCount = db.prepare('SELECT COUNT(*) as cnt FROM brand_knowledge').get();
+  if (kbCount && kbCount.cnt === 0) {
+    const insertKb = db.prepare(`
+      INSERT INTO brand_knowledge (title, category, content, tags)
+      VALUES (?, ?, ?, ?)
+    `);
+    insertKb.run(
+      'Acoustic Guitar Learning Curriculum',
+      'curriculum',
+      'Beginner curriculum covers finger placement, fundamental chords (C, G, Em, Am, D), rhythm strumming patterns, and first song playthrough in 4 weeks. Intermediate curriculum covers fingerstyle, barre chords, acoustic percussive techniques, and ear training.',
+      'guitar, lessons, beginner, syllabus'
+    );
+    insertKb.run(
+      'Pricing & Enrollment Options',
+      'faq',
+      'Online group sessions start at $49/month (4 sessions). One-on-one personalized mentorship sessions with Sneha are $120/month with direct WhatsApp feedback and weekly custom sheet music.',
+      'pricing, fees, mentorship, cost'
+    );
+    insertKb.run(
+      'Collaboration & Brand Sponsorship Policy',
+      'policy',
+      'For brand partnerships, acoustic instrument reviews, or creator collabs, proposals must be submitted with product specifications and desired timeline. We only review instruments and audio tools we genuinely use on the Sneharmony channel.',
+      'sponsorship, collab, partnerships, reviews'
+    );
+    insertKb.run(
+      'Brand Voice & Tone Guidelines',
+      'voice',
+      'Always be warm, encouraging, artistic, and patient. Never sound clinical, robotic, or dismissive. Treat every music student with enthusiasm and positive encouragement.',
+      'tone, persona, style'
+    );
+  }
+} catch (e) {
+  console.warn('Brand knowledge seed warning:', e.message);
+}
 
 // Helpers for Settings
 function getSetting(key) {
@@ -356,10 +444,75 @@ function logActivity(platform, eventType, status, details) {
   stmt.run(platform, eventType, status, typeof details === 'string' ? details : JSON.stringify(details));
 }
 
+// Log automation execution helper
+function logAutomationExecution(execData) {
+  try {
+    const stmt = db.prepare(`
+      INSERT INTO automation_executions (
+        rule_id, rule_name, platform, trigger_type, input_content,
+        author_name, status, action_taken, output_content, execution_time_ms, error_details
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    stmt.run(
+      execData.rule_id || null,
+      execData.rule_name || 'Direct Rule',
+      execData.platform || 'all',
+      execData.trigger_type || 'keyword',
+      execData.input_content || '',
+      execData.author_name || 'Anonymous',
+      execData.status || 'success',
+      execData.action_taken || 'replied',
+      execData.output_content || '',
+      execData.execution_time_ms || 0,
+      execData.error_details || null
+    );
+  } catch (err) {
+    console.error('Failed to log automation execution:', err.message);
+  }
+}
+
+// In-app Notification helper
+function createNotification(title, message, category = 'general', level = 'info', linkTab = null, linkId = null, metadata = null) {
+  try {
+    // De-duplication: check if an identical notification was created in the last 15 seconds
+    const existing = db.prepare(`
+      SELECT id FROM notifications 
+      WHERE title = ? AND category = ? AND created_at >= datetime('now', '-15 seconds')
+      LIMIT 1
+    `).get(title, category);
+
+    if (existing) {
+      return existing.id;
+    }
+
+    const stmt = db.prepare(`
+      INSERT INTO notifications (title, message, category, level, link_tab, link_id, metadata_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      title.trim(),
+      message.trim(),
+      category,
+      level,
+      linkTab,
+      linkId ? String(linkId) : null,
+      metadata ? (typeof metadata === 'string' ? metadata : JSON.stringify(metadata)) : null
+    );
+
+    return Number(result.lastInsertRowid);
+  } catch (err) {
+    console.error('Failed to create in-app notification:', err.message);
+    return null;
+  }
+}
+
 module.exports = {
   db,
   getSetting,
   setSetting,
   getAllSettings,
-  logActivity
+  logActivity,
+  logAutomationExecution,
+  createNotification
 };

@@ -11,6 +11,11 @@ import { InstagramView } from './components/InstagramView';
 import { TelegramView } from './components/TelegramView';
 import { CallingAgentView } from './components/CallingAgentView';
 import { SettingsView } from './components/SettingsView';
+import { CrmView } from './components/CrmView';
+import { AutomationsView } from './components/AutomationsView';
+import { AnalyticsView } from './components/AnalyticsView';
+import { ActivityLogView } from './components/ActivityLogView';
+import { CopilotDrawer } from './components/CopilotDrawer';
 import { api } from './api';
 import type { DashboardStats, ActivityLog, Channel, Rule, ScheduledPost, CommentItem } from './types';
 import { CheckCircle2, AlertCircle } from 'lucide-react';
@@ -19,6 +24,7 @@ export const App: React.FC = () => {
   const [currentTab, setCurrentTab] = useState('overview');
   const [loading, setLoading] = useState(true);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [copilotOpen, setCopilotOpen] = useState(false);
 
   // Global State
   const [stats, setStats] = useState<DashboardStats>({
@@ -98,27 +104,35 @@ export const App: React.FC = () => {
   const getHeaderMeta = () => {
     switch (currentTab) {
       case 'overview':
-        return { title: 'Overview', subtitle: 'Live automation metrics and recent events' };
+        return { title: 'Overview', subtitle: 'Live automation metrics and real-time operations health' };
+      case 'scheduler':
+        return { title: 'Content & Scheduler', subtitle: 'Compose, preview, and schedule multi-platform posts' };
+      case 'inbox':
+        return { title: 'Unified Inbox', subtitle: 'Cross-platform conversation stream, sentiment analysis, and AI replies' };
+      case 'crm':
+        return { title: 'Leads & CRM Pipeline', subtitle: 'Cross-platform captured leads, scoring, stages, and export' };
+      case 'automations':
+        return { title: 'AI Automations Builder', subtitle: 'Visual triggers, conditions, prebuilt templates, and sandbox simulation' };
+      case 'calling':
+        return { title: 'AI Calling Agent & Auto-Dialer', subtitle: 'Outbound voice calling, lead compliance safeguards, and call logs' };
+      case 'analytics':
+        return { title: 'Performance Analytics', subtitle: 'Real platform metrics, engagement timeseries, and conversion rates' };
       case 'channels':
-        return { title: 'Connected Channels', subtitle: 'Manage YouTube & Instagram account links' };
+        return { title: 'Connected Accounts', subtitle: 'YouTube, Instagram (Uplika), WhatsApp, and Telegram integrations' };
+      case 'activity':
+        return { title: 'Activity Audit Log', subtitle: 'Immutable chronological trace of all automations, posts, and webhooks' };
+      case 'settings':
+        return { title: 'Settings & Knowledge Base', subtitle: 'Brand voice, business FAQ memory, and API credentials' };
       case 'whatsapp':
         return { title: 'WhatsApp Automation & Leads', subtitle: 'Automated messaging, AI FAQ answering & human help escalation' };
       case 'instagram':
         return { title: 'Instagram Automation & Leads', subtitle: 'Automated DMs, AI FAQ answering & human help escalation' };
       case 'telegram':
         return { title: 'Telegram Automation & Leads', subtitle: 'Bot auto-reply, AI FAQ answering, broadcast & channel scheduling' };
-      case 'calling':
-        return { title: 'AI Calling Agent & Auto-Dialer', subtitle: 'Outbound Excel sheet calling, live lead statuses & follow-up management' };
       case 'rules':
-        return { title: 'Auto-Reply Rules', subtitle: 'Keyword triggers and AI rephrasing' };
-      case 'scheduler':
-        return { title: 'Post Scheduler', subtitle: 'Publish at a decided time across platforms' };
-      case 'inbox':
-        return { title: 'Comments & Inbox', subtitle: 'Live feed of viewer feedback and responses' };
-      case 'settings':
-        return { title: 'API Keys & Settings', subtitle: 'Local SQLite credentials configuration' };
+        return { title: 'Legacy Auto-Reply Rules', subtitle: 'Keyword triggers and AI rephrasing' };
       default:
-        return { title: 'SocialManager', subtitle: 'Self-hosted automation suite' };
+        return { title: 'SocialManager', subtitle: 'Self-hosted AI social automation platform' };
     }
   };
 
@@ -134,6 +148,7 @@ export const App: React.FC = () => {
         unrepliedCount={unrepliedCount}
         mobileMenuOpen={mobileMenuOpen}
         onCloseMobileMenu={() => setMobileMenuOpen(false)}
+        onOpenCopilot={() => setCopilotOpen(true)}
       />
 
       {/* Main Content Area */}
@@ -142,10 +157,29 @@ export const App: React.FC = () => {
         <Header
           title={headerMeta.title}
           subtitle={headerMeta.subtitle}
-          onOpenNewRule={() => setShowCreateRuleModal(true)}
-          onOpenNewPost={() => setShowCreatePostModal(true)}
+          onOpenNewRule={() => {
+            if (currentTab === 'automations') {
+              setShowCreateRuleModal(true);
+            } else {
+              setCurrentTab('automations');
+              setShowCreateRuleModal(true);
+            }
+          }}
+          onOpenNewPost={() => {
+            if (currentTab === 'scheduler') {
+              setShowCreatePostModal(true);
+            } else {
+              setCurrentTab('scheduler');
+              setShowCreatePostModal(true);
+            }
+          }}
+          onOpenAddLead={() => {
+            setCurrentTab('crm');
+          }}
+          onOpenCopilot={() => setCopilotOpen(true)}
           onRefresh={refreshAllData}
           onToggleMobileMenu={() => setMobileMenuOpen(prev => !prev)}
+          onNavigate={setCurrentTab}
         />
 
         {/* Global Notification Banner */}
@@ -189,41 +223,6 @@ export const App: React.FC = () => {
                 />
               )}
 
-              {currentTab === 'channels' && (
-                <ChannelsView
-                  channels={channels}
-                  onRefresh={refreshAllData}
-                  onNavigate={setCurrentTab}
-                />
-              )}
-
-              {currentTab === 'whatsapp' && (
-                <WhatsAppView />
-              )}
-
-              {currentTab === 'instagram' && (
-                <InstagramView />
-              )}
-
-              {currentTab === 'telegram' && (
-                <TelegramView />
-              )}
-
-              {currentTab === 'calling' && (
-                <div className="p-8 max-w-7xl mx-auto">
-                  <CallingAgentView />
-                </div>
-              )}
-
-              {currentTab === 'rules' && (
-                <RulesView
-                  rules={rules}
-                  onRefresh={refreshAllData}
-                  showCreateModal={showCreateRuleModal}
-                  onCloseCreateModal={() => setShowCreateRuleModal(false)}
-                />
-              )}
-
               {currentTab === 'scheduler' && (
                 <SchedulerView
                   posts={posts}
@@ -238,16 +237,90 @@ export const App: React.FC = () => {
                 <InboxView
                   comments={comments}
                   onRefresh={refreshAllData}
+                  onNavigate={setCurrentTab}
+                />
+              )}
+
+              {currentTab === 'crm' && (
+                <CrmView
+                  onNavigate={setCurrentTab}
+                />
+              )}
+
+              {currentTab === 'automations' && (
+                <AutomationsView
+                  rules={rules}
+                  onRefresh={refreshAllData}
+                  showCreateModal={showCreateRuleModal}
+                  onCloseCreateModal={() => setShowCreateRuleModal(false)}
+                />
+              )}
+
+              {currentTab === 'calling' && (
+                <div className="p-4 md:p-8 max-w-7xl mx-auto">
+                  <CallingAgentView />
+                </div>
+              )}
+
+              {currentTab === 'analytics' && (
+                <AnalyticsView />
+              )}
+
+              {currentTab === 'channels' && (
+                <ChannelsView
+                  channels={channels}
+                  onRefresh={refreshAllData}
+                  onNavigate={setCurrentTab}
+                />
+              )}
+
+              {currentTab === 'activity' && (
+                <ActivityLogView
+                  logs={logs}
+                  onRefresh={refreshAllData}
+                  onNavigate={setCurrentTab}
                 />
               )}
 
               {currentTab === 'settings' && (
                 <SettingsView />
               )}
+
+              {/* Dedicated / Platform-Specific Channels */}
+              {currentTab === 'whatsapp' && (
+                <WhatsAppView />
+              )}
+
+              {currentTab === 'instagram' && (
+                <InstagramView />
+              )}
+
+              {currentTab === 'telegram' && (
+                <TelegramView />
+              )}
+
+              {currentTab === 'rules' && (
+                <RulesView
+                  rules={rules}
+                  onRefresh={refreshAllData}
+                  showCreateModal={showCreateRuleModal}
+                  onCloseCreateModal={() => setShowCreateRuleModal(false)}
+                />
+              )}
             </>
           )}
         </main>
       </div>
+
+      {/* Grounded AI Copilot Slide-Over Drawer */}
+      <CopilotDrawer
+        open={copilotOpen}
+        onClose={() => setCopilotOpen(false)}
+        onNavigate={(tab) => {
+          setCurrentTab(tab);
+          setCopilotOpen(false);
+        }}
+      />
     </div>
   );
 };
