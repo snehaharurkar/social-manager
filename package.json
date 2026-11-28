@@ -9,6 +9,9 @@
     "dev:server": "node server/index.js",
     "dev:client": "npm --prefix client run dev"
   },
+  "engines": {
+    "node": ">=22.5.0"
+  },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc14",
     "cors": "^2.8.5",

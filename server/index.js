@@ -32,10 +32,23 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 
 // Middleware
-const allowedOrigins = ['http://localhost:5000', 'http://127.0.0.1:5000', 'http://localhost:3000', 'http://127.0.0.1:3000'];
+const allowedOrigins = [
+  'http://localhost:5000', 
+  'http://127.0.0.1:5000', 
+  'http://localhost:3000', 
+  'http://127.0.0.1:3000',
+  'https://kaleidoscopic-granita-e8cc8a.netlify.app'
+];
+
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin) || origin.startsWith('http://localhost:')) {
+    if (
+      !origin || 
+      allowedOrigins.includes(origin) || 
+      origin.startsWith('http://localhost:') || 
+      origin.endsWith('.netlify.app') ||
+      (process.env.ALLOWED_ORIGINS && process.env.ALLOWED_ORIGINS.split(',').includes(origin))
+    ) {
       callback(null, true);
     } else {
       callback(null, false);
@@ -125,7 +138,7 @@ if (fs.existsSync(clientDist)) {
 startScheduler();
 startTelegramPolling().catch(console.error);
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`\n=================================================`);
   console.log(`🚀 Social Manager Server running at http://localhost:${PORT}`);
   console.log(`📡 API Endpoints available at http://localhost:${PORT}/api`);

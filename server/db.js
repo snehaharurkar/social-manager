@@ -11,8 +11,12 @@ if (!fs.existsSync(dataDir)) {
 const dbPath = path.join(dataDir, 'app.db');
 const db = new DatabaseSync(dbPath);
 
-// Enable WAL mode for performance
-db.exec('PRAGMA journal_mode = WAL;');
+// Enable journal mode safely for both local and cloud environments
+try {
+  db.exec('PRAGMA journal_mode = WAL;');
+} catch (e) {
+  try { db.exec('PRAGMA journal_mode = DELETE;'); } catch {}
+}
 db.exec('PRAGMA foreign_keys = ON;');
 
 // Initialize tables
