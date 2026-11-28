@@ -1,4 +1,16 @@
-const { DatabaseSync } = require('node:sqlite');
+let Database;
+try {
+  // Built-in for Node.js v22.5.0+
+  const sqlite = require('node:sqlite');
+  Database = sqlite.DatabaseSync;
+} catch (e) {
+  try {
+    // Universal fallback for Node.js <= 20
+    Database = require('better-sqlite3');
+  } catch (err) {
+    throw new Error('Neither built-in node:sqlite nor better-sqlite3 is available. Please use Node.js 22+ or install better-sqlite3.');
+  }
+}
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -9,7 +21,7 @@ if (!fs.existsSync(dataDir)) {
 }
 
 const dbPath = path.join(dataDir, 'app.db');
-const db = new DatabaseSync(dbPath);
+const db = new Database(dbPath);
 
 // Enable journal mode safely for both local and cloud environments
 try {
