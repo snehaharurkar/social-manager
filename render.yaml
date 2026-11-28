@@ -3,7 +3,7 @@ services:
     name: social-manager-backend
     runtime: node
     plan: free
-    buildCommand: npm install
+    buildCommand: npm install && npm --prefix client install --include=dev && npm --prefix client run build
     startCommand: node server/index.js
     healthCheckPath: /api/health
     envVars:
