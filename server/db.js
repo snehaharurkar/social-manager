@@ -209,7 +209,7 @@ db.exec(`
     email TEXT,
     interest TEXT,
     notes TEXT,
-    call_status TEXT DEFAULT 'pending', -- 'pending' | 'queued' | 'calling' | 'completed' | 'interested' | 'needs_follow_up' | 'busy' | 'no_answer' | 'not_interested'
+    call_status TEXT DEFAULT 'pending', -- 'pending' | 'queued' | 'calling' | 'completed' | 'interested' | 'needs_follow_up' | 'busy' | 'no_answer' | 'not_interested' | 'failed' | 'dnc'
     call_attempts INTEGER DEFAULT 0,
     last_called_at DATETIME,
     call_duration INTEGER DEFAULT 0,
@@ -231,6 +231,14 @@ db.exec(`
     status TEXT NOT NULL,
     transcript TEXT,
     outcome TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS do_not_contact (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone_number TEXT UNIQUE NOT NULL,
+    reason TEXT,
+    source TEXT DEFAULT 'manual',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -422,26 +430,59 @@ Frequently Asked Questions & Services:
 - Booking & Inquiries: Custom acoustic music production and guest appearances available upon inquiry.
 - Working Hours: Mon - Sat, 10:00 AM - 7:00 PM IST.`,
 
-    // AI Voice Calling Agent Defaults
-    CALLING_MODE: 'simulation', // 'live' | 'simulation'
+    // AI Voice Calling Agent & Outbound Telecaller Defaults
+    CALLING_MODE: 'live', // Default to live calling
     CALLING_PROVIDER: 'vapi', // 'vapi' | 'twilio'
     VAPI_API_KEY: '',
-    VAPI_PHONE_NUMBER_ID: '',
-    VAPI_ASSISTANT_ID: '',
-    CALLING_AGENT_NAME: 'Aria (Sneharmony AI Caller)',
-    CALLING_AGENT_VOICE: 'female',
-    CALLING_DEFAULT_SCRIPT: `Hello {name}! 🌷 This is Aria calling on behalf of Sneha from Sneharmony.
-I noticed you were interested in our music lessons and creator collaborations!
-I wanted to quickly check in and see if you have any questions or would like to schedule a session with Sneha?`,
-    CALLING_SYSTEM_PROMPT: `You are Aria, an empathetic, cheerful, and professional AI Voice Caller representing Sneha from Sneharmony (Sneha's YouTube channel & acoustic guitar learning academy).
-Your goal on this phone call:
-1. Politely greet the customer by their name and mention their music inquiry.
-2. Keep your answers short and conversational (1-2 sentences), exactly like a real phone call.
-3. Understand their musical goal (beginner acoustic guitar, fingerstyle, vocal coaching, or artist collaboration).
-4. If they are busy or driving, ask when would be a good time to call back.
-5. Offer to send our complete lesson schedule and WhatsApp brochure immediately after the call.
-6. Be warm, friendly, natural, and never sound robotic.`,
+    VAPI_PHONE_NUMBER_ID: '2e79a5b3-ba4f-4e5c-8c0c-332ed538c3d9',
+    VAPI_ASSISTANT_ID: '4f27a2f3-3248-46a3-b1ec-3612340d4923',
+    CALLING_AGENT_NAME: 'Aria (Outbound AI Telecaller)',
+    CALLING_AGENT_VOICE: 'Elliot',
+    CALLING_COMPANY_NAME: 'Sneharmony Music & Creator Academy',
+    CALLING_BUSINESS_DESCRIPTION: 'Premier online acoustic guitar, fingerstyle, and creator academy founded by Sneha Harurkar.',
+    CALLING_PRODUCT_DETAILS: 'Beginner to advanced 1-on-1 and cohort acoustic guitar sessions, fingerstyle mastery, and song accompaniment.',
+    CALLING_PRICING: 'Trial session: Free 15-min assessment. Beginner 8-session monthly: ₹4,500 ($55). Advanced fingerstyle: ₹7,000 ($85).',
+    CALLING_OFFERS: 'Special 15% discount for full 3-month course enrollment this week with free PDF chords & songbook.',
+    CALLING_ELIGIBILITY: 'Age 10+, beginners to intermediate learners with access to an acoustic guitar and 20 mins daily practice.',
+    CALLING_FAQS: 'Q: Are classes live or recorded? A: All sessions are live interactive 1-on-1 with Sneha.\nQ: What if I miss a class? A: Free reschedule within 7 days.\nQ: Do complete beginners learn? A: Yes, 90% of students start with zero guitar experience.',
+    CALLING_SALES_OBJECTIVES: 'Understand customer musical goal, qualify interest, overcome scheduling/price objections, and confirm WhatsApp brochure or free trial booking.',
+    CALLING_DEFAULT_SCRIPT: `Hello {name}! This is Aria, an AI assistant calling on behalf of Sneha from Sneharmony.
+I noticed you were interested in our acoustic guitar lessons. Is now a good time for a quick 2-minute chat?`,
+    CALLING_QUALIFICATION_QUESTIONS: `1. Have you ever played acoustic guitar before, or are you starting from scratch?
+2. What is your favorite music genre or specific songs you want to learn to play?
+3. How many days a week would you be able to practice?`,
+    CALLING_OBJECTION_HANDLING: `Busy / In a meeting / Driving -> Apologize warmly and ask: "I completely understand! Would tomorrow at 3 PM or 6 PM work better for a brief callback?"
+Too expensive / Budget concern -> "We also have a flexible split-payment starter plan and a free 15-minute trial session so you can try before deciding!"
+Hesitant about online learning -> "Sneha's multi-angle camera setup lets you see hand positions and fretboards clearly. Over 500 students have learned from scratch this way."
+Not interested -> "Understood, thank you so much for your time. Have a wonderful day!" (Immediately end call politely)`,
+    CALLING_HUMAN_HANDOFF_CONTACT: 'Sneha Harurkar & Advisory Team | WhatsApp/Phone: +91 98765 43210 | Email: support@sneharmony.com',
+    CALLING_CLOSING_MESSAGE: 'Thank you so much for your time, {name}! I will send our complete curriculum schedule and WhatsApp brochure right away. Have a wonderful day!',
+    CALLING_SYSTEM_PROMPT: `You are Aria, a friendly, empathetic, honest, and professional AI Telecaller representing Sneha from Sneharmony.
+Rules:
+1. Honestly introduce yourself as an AI assistant calling on behalf of Sneha Harurkar.
+2. Confirm if it is a good time to speak. If the customer is driving, busy, or asks to call later, politely schedule a callback time and conclude.
+3. Keep answers conversational, natural, and concise (1-2 sentences), exactly like a real human telecaller.
+4. Explain course details, pricing, and FAQs using ONLY the provided business knowledge. Never invent pricing, discounts, or guarantees.
+5. Ask one qualification question at a time and listen attentively.
+6. If the customer is not interested or requests no more calls, respect their wish immediately, thank them warmly, and mark them as Do Not Contact.
+7. Offer human assistance for complex requests.`,
     CALLING_DELAY_BETWEEN_CALLS: '8',
+    CALLING_MAX_ATTEMPTS: '3',
+    CALLING_BATCH_SIZE: '5',
+    CALLING_CONCURRENCY_LIMIT: '1',
+    CALLING_WINDOW_START: '10:00',
+    CALLING_WINDOW_END: '19:00',
+    CALLING_TIMEZONE: 'Asia/Kolkata',
+    CALLING_RECORDING_ENABLED: '1',
+    // Multi-Provider AI Calling Engine Defaults (Vapi, Retell AI, OmniDimension)
+    ACTIVE_CALLING_PROVIDER: 'vapi', // 'vapi' | 'retell' | 'omnidimension'
+    RETELL_API_KEY: '',
+    RETELL_AGENT_ID: '',
+    RETELL_PHONE_NUMBER: '',
+    OMNIDIMENSION_API_KEY: '',
+    OMNIDIMENSION_AGENT_ID: '',
+    OMNIDIMENSION_PHONE_NUMBER: '',
+    OMNIDIMENSION_BASE_URL: 'https://omnidim.io/api/v1',
     TWILIO_ACCOUNT_SID: '',
     TWILIO_AUTH_TOKEN: '',
     TWILIO_PHONE_NUMBER: ''
@@ -451,6 +492,61 @@ Your goal on this phone call:
     if (!getSetting(key)) {
       setSetting(key, val);
     }
+  }
+
+  // Safe migrations for table extensions
+  try {
+    const addCol = (tbl, col, def) => {
+      try {
+        const existing = db.prepare(`PRAGMA table_info(${tbl});`).all().map(c => c.name);
+        if (!existing.includes(col)) {
+          db.exec(`ALTER TABLE ${tbl} ADD COLUMN ${col} ${def};`);
+        }
+      } catch (err) {
+        // Ignored
+      }
+    };
+
+    // calling_leads
+    addCol('calling_leads', 'provider', 'TEXT DEFAULT "vapi"');
+    addCol('calling_leads', 'company', 'TEXT');
+    addCol('calling_leads', 'lead_source', 'TEXT DEFAULT "manual"');
+    addCol('calling_leads', 'consent_status', 'TEXT DEFAULT "consented"');
+    addCol('calling_leads', 'do_not_contact', 'INTEGER DEFAULT 0');
+    addCol('calling_leads', 'custom_fields', 'TEXT');
+    addCol('calling_leads', 'interest_level', 'TEXT DEFAULT "medium"');
+    addCol('calling_leads', 'last_call_outcome', 'TEXT');
+    addCol('calling_leads', 'end_reason', 'TEXT');
+    addCol('calling_leads', 'external_call_id', 'TEXT');
+    addCol('calling_leads', 'recording_url', 'TEXT');
+
+    // calling_campaigns
+    addCol('calling_campaigns', 'provider', 'TEXT DEFAULT "vapi"');
+    addCol('calling_campaigns', 'assistant_id', 'TEXT');
+    addCol('calling_campaigns', 'max_attempts', 'INTEGER DEFAULT 3');
+    addCol('calling_campaigns', 'batch_size', 'INTEGER DEFAULT 5');
+    addCol('calling_campaigns', 'calling_window_start', 'TEXT DEFAULT "10:00"');
+    addCol('calling_campaigns', 'calling_window_end', 'TEXT DEFAULT "19:00"');
+    addCol('calling_campaigns', 'timezone', 'TEXT DEFAULT "Asia/Kolkata"');
+    addCol('calling_campaigns', 'concurrency_limit', 'INTEGER DEFAULT 1');
+    addCol('calling_campaigns', 'interested_count', 'INTEGER DEFAULT 0');
+    addCol('calling_campaigns', 'failed_count', 'INTEGER DEFAULT 0');
+
+    // call_logs
+    addCol('call_logs', 'provider', 'TEXT DEFAULT "vapi"');
+    addCol('call_logs', 'campaign_id', 'INTEGER');
+    addCol('call_logs', 'end_reason', 'TEXT');
+    addCol('call_logs', 'ai_summary', 'TEXT');
+    addCol('call_logs', 'customer_intent', 'TEXT');
+    addCol('call_logs', 'objections', 'TEXT');
+    addCol('call_logs', 'questions_asked', 'TEXT');
+    addCol('call_logs', 'interest_level', 'TEXT');
+    addCol('call_logs', 'next_action', 'TEXT');
+    addCol('call_logs', 'cost', 'REAL DEFAULT 0');
+    addCol('call_logs', 'external_call_id', 'TEXT');
+    addCol('call_logs', 'recording_url', 'TEXT');
+  } catch (migErr) {
+    console.error('Calling migration warning:', migErr.message);
   }
 })();
 

@@ -14,6 +14,13 @@ export interface Channel {
     viewCount?: string;
     customUrl?: string;
     description?: string;
+    targetChatId?: string;
+    autoReplyEnabled?: boolean;
+    auto_reply_enabled?: boolean;
+    publishingEnabled?: boolean;
+    publishing_enabled?: boolean;
+    privacyStatus?: string;
+    [key: string]: any;
   };
   created_at: string;
 }
@@ -194,7 +201,50 @@ export interface TelegramSettings {
   TELEGRAM_KNOWLEDGE_BASE: string;
 }
 
-export type CallingLeadStatus = 'pending' | 'calling' | 'interested' | 'needs_follow_up' | 'busy' | 'completed' | 'not_interested';
+export type CallingProviderId = 'vapi' | 'retell' | 'omnidimension';
+
+export interface ProviderCapability {
+  supportsRecordings: boolean;
+  supportsTranscripts: boolean;
+  supportsEndingCall: boolean;
+  supportsDynamicPrompts: boolean;
+  supportsWebhooks: boolean;
+}
+
+export interface ProviderStatusCard {
+  id: CallingProviderId;
+  name: string;
+  isActive: boolean;
+  isConfigured: boolean;
+  missingFields: string[];
+  details: {
+    apiKeyConfigured?: boolean;
+    agentConfigured?: boolean;
+    phoneConfigured?: boolean;
+    agentId?: string;
+    phoneNumber?: string;
+    assistantName?: string;
+    phoneNumberName?: string;
+  };
+  capabilities: ProviderCapability;
+}
+
+export interface RemoteAssistant {
+  id: string;
+  name: string;
+  model?: string;
+  voice?: string;
+}
+
+export interface RemotePhoneNumber {
+  id: string;
+  number: string;
+  name?: string;
+  provider?: string;
+  status?: string;
+}
+
+export type CallingLeadStatus = 'pending' | 'queued' | 'calling' | 'interested' | 'needs_follow_up' | 'busy' | 'no_answer' | 'completed' | 'not_interested' | 'failed' | 'dnc';
 
 export interface CallingLead {
   id: number;
@@ -202,7 +252,15 @@ export interface CallingLead {
   name: string;
   phone_number: string;
   email?: string;
+  company?: string;
   interest?: string;
+  lead_source?: string;
+  consent_status?: string;
+  do_not_contact?: number;
+  custom_fields?: any;
+  interest_level?: string;
+  last_call_outcome?: string;
+  end_reason?: string;
   notes?: string;
   call_status: CallingLeadStatus;
   call_duration?: number;
@@ -211,6 +269,7 @@ export interface CallingLead {
   call_transcript?: string;
   recording_url?: string;
   external_call_id?: string;
+  provider?: CallingProviderId;
   follow_up_date?: string;
   follow_up_notes?: string;
   follow_up_status?: 'pending' | 'completed' | 'cancelled';
@@ -225,17 +284,68 @@ export interface CallingCampaign {
   file_name?: string;
   total_leads: number;
   completed_calls: number;
-  status: 'idle' | 'running' | 'paused' | 'completed';
+  status: 'idle' | 'running' | 'paused' | 'completed' | 'calling';
   call_script: string;
   delay_seconds: number;
+  assistant_id?: string;
+  provider?: CallingProviderId;
+  max_attempts?: number;
+  batch_size?: number;
+  calling_window_start?: string;
+  calling_window_end?: string;
+  timezone?: string;
+  concurrency_limit?: number;
   created_at: string;
   updated_at: string;
-  count_interested?: number;
-  count_needs_follow_up?: number;
-  count_busy?: number;
-  count_completed?: number;
-  count_not_interested?: number;
-  count_pending?: number;
+  total_lead_count?: number;
+  pending_count?: number;
+  completed_count?: number;
+  interested_count?: number;
+  failed_count?: number;
+}
+
+export interface CallingDiagnostics {
+  timestamp: string;
+  apiKeyConfigured: boolean;
+  apiKeyMasked: string | null;
+  apiKeyValid: boolean;
+  callingMode: string;
+  assistants: Array<{
+    id: string;
+    name: string;
+    model: string;
+    voice: string;
+  }>;
+  selectedAssistantId: string;
+  selectedAssistant: any;
+  phoneNumbers: Array<{
+    id: string;
+    number: string;
+    provider: string;
+    name: string;
+    status: string;
+  }>;
+  selectedPhoneNumberId: string;
+  selectedPhoneNumber: any;
+  outboundCapability: {
+    supportedCountryCodes: string[];
+    canCallIndia: boolean;
+    canCallUS: boolean;
+    reason: string;
+  };
+  recentCalls: Array<{
+    id: string;
+    status: string;
+    endedReason: string | null;
+    destination: string;
+    createdAt: string;
+  }>;
+  issues: Array<{
+    level: 'error' | 'warning' | 'info';
+    component: string;
+    message: string;
+  }>;
+  recommendations: string[];
 }
 
 export interface CallingSettings {
@@ -341,10 +451,15 @@ export interface CrmLead {
 export interface CrmStats {
   totalLeads: number;
   byPlatform: {
-    calling: number;
-    whatsapp: number;
-    instagram: number;
-    telegram: number;
+    all?: number;
+    calling?: number;
+    whatsapp?: number;
+    instagram?: number;
+    telegram?: number;
+    youtube?: number;
+    manual?: number;
+    website?: number;
+    [key: string]: number | undefined;
   };
   byStage: {
     new: number;
@@ -439,7 +554,7 @@ export interface AppNotification {
   id: number;
   title: string;
   message: string;
-  category: 'publishing' | 'scheduler' | 'account' | 'sync' | 'automation' | 'lead' | 'calling' | 'system' | 'general';
+  category: 'publishing' | 'scheduler' | 'account' | 'sync' | 'automation' | 'lead' | 'calling' | 'telegram' | 'system' | 'general';
   level: 'info' | 'success' | 'warning' | 'error';
   is_read: number;
   link_tab?: string | null;

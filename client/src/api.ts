@@ -8,6 +8,11 @@ import type {
   CallingLead,
   CallingCampaign,
   CallingSettings,
+  CallingDiagnostics,
+  CallingProviderId,
+  ProviderStatusCard,
+  RemoteAssistant,
+  RemotePhoneNumber,
   ParsedSheetPreview,
   FollowUpsResponse,
   CrmLead,
@@ -75,6 +80,17 @@ export const api = {
 
   async deleteChannel(id: string): Promise<void> {
     await fetch(`${getApiBase()}/channels/${id}`, { method: 'DELETE' });
+  },
+
+  async updateChannel(id: string, data: any): Promise<Channel> {
+    const res = await fetch(`${getApiBase()}/channels/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data)
+    });
+    const json = await safeJson(res, 'Failed to update channel');
+    if (!json.success) throw new Error(json.error || 'Failed to update channel');
+    return json.channel;
   },
 
   async triggerSync(): Promise<void> {
@@ -510,19 +526,46 @@ export const api = {
     return data;
   },
 
+  async getTelegramStatus(): Promise<{
+    success: boolean;
+    botConnected: boolean;
+    bot: any;
+    botUsername: string | null;
+    channelId: string | null;
+    channelTitle: string | null;
+    channelVerified: boolean;
+    permissionStatus: string;
+    errorMessage?: string;
+    publishingHistory: any[];
+    logs: any[];
+  }> {
+    const res = await fetch(`${getApiBase()}/telegram/status`);
+    const data = await safeJson(res, 'Failed to fetch Telegram status');
+    return data;
+  },
+
+  async testTelegramConnection(): Promise<{ success: boolean; message: string; result: any }> {
+    const res = await fetch(`${getApiBase()}/telegram/test-connection`, {
+      method: 'POST'
+    });
+    const data = await safeJson(res, 'Failed to test Telegram connection');
+    if (!data.success) throw new Error(data.error || 'Failed to deliver test message');
+    return data;
+  },
+
   async getTelegramSettings(): Promise<any> {
-    const res = await fetch(`${API_BASE}/telegram/settings`);
-    const data = await res.json();
+    const res = await fetch(`${getApiBase()}/telegram/settings`);
+    const data = await safeJson(res, 'Failed to fetch settings');
     return data.settings || {};
   },
 
   async saveTelegramSettings(settings: any): Promise<void> {
-    const res = await fetch(`${API_BASE}/telegram/settings`, {
+    const res = await fetch(`${getApiBase()}/telegram/settings`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(settings)
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Failed to save settings');
     if (!data.success) throw new Error(data.error);
   },
 
@@ -530,13 +573,17 @@ export const api = {
   async uploadCallingSheet(file: File): Promise<ParsedSheetPreview> {
     const formData = new FormData();
     formData.append('sheet', file);
-    const res = await fetch(`${API_BASE}/calling/upload-sheet`, {
+    const res = await fetch(`${getApiBase()}/calling/upload-sheet`, {
       method: 'POST',
       body: formData
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Failed to upload sheet');
     if (!data.success) throw new Error(data.error || 'Failed to upload sheet');
     return data;
+  },
+
+  async uploadSheet(file: File): Promise<ParsedSheetPreview> {
+    return this.uploadCallingSheet(file);
   },
 
   async createCallingCampaign(data: {
@@ -545,20 +592,268 @@ export const api = {
     leads: any[];
     customScript?: string;
     delaySeconds?: number;
-  }): Promise<{ success: boolean; campaignId: number; totalLeads: number; message: string }> {
-    const res = await fetch(`${API_BASE}/calling/campaigns`, {
+  }): Promise<{ success: boolean; campaignId: number; totalLeads: number; callableLeads?: number; message: string }> {
+    const res = await fetch(`${getApiBase()}/calling/campaigns`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data)
     });
-    const json = await res.json();
+    const json = await safeJson(res, 'Failed to create campaign');
     if (!json.success) throw new Error(json.error || 'Failed to create campaign');
     return json;
   },
 
+  async getCallingStats(): Promise<{
+    totalLeads: number;
+    eligibleLeads?: number;
+    pendingCalls: number;
+    inProgressCalls?: number;
+    completedCalls: number;
+    interestedLeads: number;
+    failedCalls?: number;
+    followUpsDue?: number;
+    totalCampaigns: number;
+    totalCallLogs: number;
+  }> {
+    const res = await fetch(`${getApiBase()}/calling/stats`);
+    const data = await safeJson(res, 'Failed to fetch calling stats');
+    return data.stats || {
+      totalLeads: 0,
+      eligibleLeads: 0,
+      pendingCalls: 0,
+      inProgressCalls: 0,
+      completedCalls: 0,
+      interestedLeads: 0,
+      failedCalls: 0,
+      followUpsDue: 0,
+      totalCampaigns: 0,
+      totalCallLogs: 0
+    };
+  },
+
+  async getCallingProviders(): Promise<{ activeProvider: CallingProviderId; providers: ProviderStatusCard[] }> {
+    const res = await fetch(`${getApiBase()}/calling/providers`);
+    const data = await safeJson(res, 'Failed to fetch calling providers');
+    return {
+      activeProvider: data.activeProvider || 'vapi',
+      providers: data.providers || []
+    };
+  },
+
+  async setActiveCallingProvider(providerId: CallingProviderId): Promise<{ success: boolean; activeProvider: string; name: string }> {
+    const res = await fetch(`${getApiBase()}/calling/providers/active`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId })
+    });
+    return await safeJson(res, 'Failed to set active provider');
+  },
+
+  async testCallingProvider(providerId: string): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/providers/${providerId}/test`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Provider test failed');
+  },
+
+  async getProviderAssistants(providerId: string): Promise<RemoteAssistant[]> {
+    const res = await fetch(`${getApiBase()}/calling/providers/${providerId}/assistants`);
+    const data = await safeJson(res, 'Failed to fetch assistants');
+    return data.assistants || [];
+  },
+
+  async getProviderPhoneNumbers(providerId: string): Promise<RemotePhoneNumber[]> {
+    const res = await fetch(`${getApiBase()}/calling/providers/${providerId}/phone-numbers`);
+    const data = await safeJson(res, 'Failed to fetch phone numbers');
+    return data.phoneNumbers || [];
+  },
+
+  async saveProviderConfig(providerId: string, config: any): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/providers/${providerId}/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config)
+    });
+    return await safeJson(res, 'Failed to save provider config');
+  },
+
+  async getCallingDiagnostics(): Promise<CallingDiagnostics> {
+    const res = await fetch(`${getApiBase()}/calling/diagnostics`);
+    const data = await safeJson(res, 'Failed to run calling diagnostics');
+    return data.diagnostics;
+  },
+
+  async autoConfigureCalling(): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/diagnostics/auto-configure`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Failed to auto-configure Vapi');
+  },
+
+  async syncCallStatus(callId: string): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/calls/${callId}/sync`);
+    const data = await safeJson(res, 'Failed to sync call details');
+    return data.call;
+  },
+
+  async endActiveCall(callId: string): Promise<boolean> {
+    const res = await fetch(`${getApiBase()}/calling/calls/${callId}/end`, {
+      method: 'POST'
+    });
+    const data = await safeJson(res, 'Failed to end call');
+    return data.success;
+  },
+
+  async startCallingCampaign(campaignId: number): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/campaigns/${campaignId}/start`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Failed to start campaign');
+  },
+
+  async pauseCallingCampaign(campaignId: number): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/campaigns/${campaignId}/pause`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Failed to pause campaign');
+  },
+
+  async stopCallingCampaign(campaignId: number): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/campaigns/${campaignId}/stop`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Failed to stop campaign');
+  },
+
+  async retryCallingLead(leadId: number): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/leads/${leadId}/retry`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Failed to retry lead call');
+  },
+
+  async markLeadDnc(leadId: number, reason?: string): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/leads/${leadId}/dnc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reason })
+    });
+    return await safeJson(res, 'Failed to mark DNC');
+  },
+
+  async confirmSpreadsheetImport(payload: {
+    campaignTitle: string;
+    fileName: string;
+    leads: any[];
+    customScript?: string;
+    delaySeconds?: number;
+    assistantId?: string;
+    provider?: string;
+  }): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/import-confirmed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return await safeJson(res, 'Failed to import leads');
+  },
+
+  async getDncList(): Promise<any[]> {
+    const res = await fetch(`${getApiBase()}/calling/dnc`);
+    const data = await safeJson(res, 'Failed to fetch DNC list');
+    return data.list || [];
+  },
+
+  async addToDnc(phoneNumber: string, reason?: string): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/dnc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ phone_number: phoneNumber, reason })
+    });
+    return await safeJson(res, 'Failed to add to DNC');
+  },
+
+  async removeFromDnc(id: number): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/dnc/${id}`, {
+      method: 'DELETE'
+    });
+    return await safeJson(res, 'Failed to remove from DNC');
+  },
+
+  async completeFollowUp(leadId: number): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/follow-ups/${leadId}/complete`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Failed to complete follow up');
+  },
+
+  async cancelFollowUp(leadId: number): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/follow-ups/${leadId}/cancel`, {
+      method: 'POST'
+    });
+    return await safeJson(res, 'Failed to cancel follow up');
+  },
+
+  async getCallingHistory(filter?: { status?: string; search?: string; limit?: number; provider?: string }): Promise<any[]> {
+    const params = new URLSearchParams();
+    if (filter?.status) params.append('status', filter.status);
+    if (filter?.search) params.append('search', filter.search);
+    if (filter?.provider && filter.provider !== 'all') params.append('provider', filter.provider);
+    if (filter?.limit) params.append('limit', String(filter.limit));
+
+    const res = await fetch(`${getApiBase()}/calling/history?${params.toString()}`);
+    const data = await safeJson(res, 'Failed to fetch calling history');
+    return data.history || [];
+  },
+
+  async addCallingLead(lead: {
+    name: string;
+    phone_number: string;
+    email?: string;
+    company?: string;
+    interest?: string;
+    notes?: string;
+    campaign_id?: number;
+  }): Promise<CallingLead> {
+    const res = await fetch(`${getApiBase()}/calling/leads`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lead)
+    });
+    const data = await safeJson(res, 'Failed to add lead');
+    if (!data.success) throw new Error(data.error || 'Failed to add lead');
+    return data.lead;
+  },
+
+  async callDirect(lead: {
+    name?: string;
+    phone_number: string;
+    email?: string;
+    interest?: string;
+    notes?: string;
+    campaign_id?: number;
+  }): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/call-direct`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(lead)
+    });
+    const data = await safeJson(res, 'Failed to place direct call');
+    if (!data.success) throw new Error(data.error || 'Failed to place direct call');
+    return data;
+  },
+
+  async cleanupUpload(filePath: string): Promise<void> {
+    await fetch(`${getApiBase()}/calling/cleanup-upload`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ filePath })
+    });
+  },
+
   async getCallingCampaigns(): Promise<CallingCampaign[]> {
-    const res = await fetch(`${API_BASE}/calling/campaigns`);
-    const data = await res.json();
+    const res = await fetch(`${getApiBase()}/calling/campaigns`);
+    const data = await safeJson(res, 'Failed to fetch campaigns');
     return data.campaigns || [];
   },
 
@@ -589,41 +884,43 @@ export const api = {
     return data.leads || [];
   },
 
-  async callLead(leadId: number): Promise<any> {
-    const res = await fetch(`${API_BASE}/calling/leads/${leadId}/call`, {
-      method: 'POST'
+  async callLead(leadId: number, options?: { provider?: string; customOpeningMessage?: string; assistantId?: string; fromNumber?: string }): Promise<any> {
+    const res = await fetch(`${getApiBase()}/calling/leads/${leadId}/call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(options || {})
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Call failed');
     if (!data.success) throw new Error(data.error || 'Call failed');
-    return data.callResult;
+    return data.call;
   },
 
   async updateCallingLead(leadId: number, update: Partial<CallingLead>): Promise<CallingLead> {
-    const res = await fetch(`${API_BASE}/calling/leads/${leadId}`, {
+    const res = await fetch(`${getApiBase()}/calling/leads/${leadId}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(update)
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Failed to update lead');
     if (!data.success) throw new Error(data.error || 'Failed to update lead');
     return data.lead;
   },
 
   async deleteCallingLead(leadId: number): Promise<void> {
-    const res = await fetch(`${API_BASE}/calling/leads/${leadId}`, {
+    const res = await fetch(`${getApiBase()}/calling/leads/${leadId}`, {
       method: 'DELETE'
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Failed to delete lead');
     if (!data.success) throw new Error(data.error || 'Failed to delete lead');
   },
 
   async scheduleCallingFollowUp(leadId: number, followUpDate: string, notes?: string): Promise<CallingLead> {
-    const res = await fetch(`${API_BASE}/calling/leads/${leadId}/follow-up`, {
+    const res = await fetch(`${getApiBase()}/calling/leads/${leadId}/follow-up`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ followUpDate, notes })
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Failed to schedule follow-up');
     if (!data.success) throw new Error(data.error || 'Failed to schedule follow-up');
     return data.lead;
   },
@@ -633,16 +930,16 @@ export const api = {
     if (filter?.campaignId) params.append('campaignId', filter.campaignId);
     if (filter?.status) params.append('status', filter.status);
 
-    const res = await fetch(`${API_BASE}/calling/follow-ups?${params.toString()}`);
-    const data = await res.json();
+    const res = await fetch(`${getApiBase()}/calling/follow-ups?${params.toString()}`);
+    const data = await safeJson(res, 'Failed to fetch follow-ups');
     return data;
   },
 
   async deleteCallingCampaign(campaignId: number): Promise<void> {
-    const res = await fetch(`${API_BASE}/calling/campaigns/${campaignId}`, {
+    const res = await fetch(`${getApiBase()}/calling/campaigns/${campaignId}`, {
       method: 'DELETE'
     });
-    const data = await res.json();
+    const data = await safeJson(res, 'Failed to delete campaign');
     if (!data.success) throw new Error(data.error || 'Failed to delete campaign');
   },
 
@@ -671,10 +968,12 @@ export const api = {
     name: string;
     phone_number: string;
     email?: string;
+    company?: string;
     interest?: string;
     notes?: string;
     follow_up_date?: string | null;
     follow_up_notes?: string;
+    provider?: string;
   }): Promise<{ success: boolean; lead: CallingLead; message: string }> {
     const res = await fetch(`${getApiBase()}/calling/leads`, {
       method: 'POST',

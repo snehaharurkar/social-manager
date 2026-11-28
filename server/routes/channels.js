@@ -31,6 +31,132 @@ router.get('/', (req, res) => {
   }
 });
 
+// Get a single channel by ID
+router.get('/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const channel = db.prepare(`
+      SELECT id, platform, platform_id, display_name, username, avatar_url, 
+             token_expires_at, metadata, status, created_at, updated_at
+      FROM channels WHERE id = ?
+    `).get(id);
+
+    if (!channel) {
+      return res.status(404).json({ success: false, error: 'Channel not found' });
+    }
+
+    let meta = {};
+    try { meta = JSON.parse(channel.metadata || '{}'); } catch {}
+
+    res.json({
+      success: true,
+      channel: {
+        ...channel,
+        meta,
+        isTokenValid: channel.token_expires_at ? channel.token_expires_at > Date.now() : true
+      }
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Update an existing channel's configuration
+router.put('/:id', (req, res) => {
+  try {
+    const { id } = req.params;
+    const channel = db.prepare('SELECT * FROM channels WHERE id = ?').get(id);
+
+    if (!channel) {
+      return res.status(404).json({ success: false, error: 'Channel not found' });
+    }
+
+    const {
+      display_name,
+      username,
+      platform_id,
+      access_token,
+      metadata,
+      status: newStatus,
+      auto_reply_enabled,
+      publishing_enabled,
+      target_chat_id
+    } = req.body;
+
+    let existingMeta = {};
+    try { existingMeta = JSON.parse(channel.metadata || '{}'); } catch {}
+
+    const updatedMeta = {
+      ...existingMeta,
+      ...(metadata || {})
+    };
+
+    if (auto_reply_enabled !== undefined) updatedMeta.autoReplyEnabled = Boolean(auto_reply_enabled);
+    if (publishing_enabled !== undefined) updatedMeta.publishingEnabled = Boolean(publishing_enabled);
+    if (target_chat_id !== undefined) updatedMeta.targetChatId = target_chat_id;
+
+    const finalDisplayName = display_name !== undefined ? display_name.trim() : channel.display_name;
+    const finalUsername = username !== undefined ? (username.startsWith('@') ? username : `@${username}`) : channel.username;
+    const finalPlatformId = target_chat_id || platform_id || channel.platform_id;
+    const finalStatus = newStatus || channel.status || 'active';
+
+    // Only update token if explicitly provided and not masked
+    let finalToken = channel.access_token;
+    if (access_token && !access_token.includes('••••')) {
+      finalToken = access_token.trim();
+    }
+
+    db.prepare(`
+      UPDATE channels 
+      SET display_name = ?,
+          username = ?,
+          platform_id = ?,
+          access_token = ?,
+          metadata = ?,
+          status = ?,
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      finalDisplayName,
+      finalUsername,
+      finalPlatformId,
+      finalToken,
+      JSON.stringify(updatedMeta),
+      finalStatus,
+      id
+    );
+
+    // If Telegram platform, keep settings table synchronized
+    if (channel.platform === 'telegram') {
+      const { setSetting } = require('../db');
+      if (finalPlatformId) setSetting('TELEGRAM_CHANNEL_ID', finalPlatformId);
+      if (finalToken && finalToken !== channel.access_token) setSetting('TELEGRAM_BOT_TOKEN', finalToken);
+      if (finalUsername) setSetting('TELEGRAM_BOT_USERNAME', finalUsername.replace(/^@/, ''));
+      if (auto_reply_enabled !== undefined) {
+        setSetting('TELEGRAM_AUTO_REPLY_ENABLED', auto_reply_enabled ? '1' : '0');
+      }
+    }
+
+    logActivity(channel.platform, 'channel_edit', 'success', `Updated configuration for ${channel.platform} account "${finalDisplayName}"`);
+
+    const updated = db.prepare('SELECT id, platform, platform_id, display_name, username, avatar_url, metadata, status, updated_at FROM channels WHERE id = ?').get(id);
+    let parsedMeta = {};
+    try { parsedMeta = JSON.parse(updated.metadata || '{}'); } catch {}
+
+    res.json({
+      success: true,
+      channel: {
+        ...updated,
+        meta: parsedMeta
+      },
+      message: 'Channel configuration updated successfully'
+    });
+  } catch (err) {
+    console.error('Error updating channel:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // Delete a channel
 router.delete('/:id', (req, res) => {
   try {

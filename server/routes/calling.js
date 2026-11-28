@@ -3,17 +3,29 @@ const router = express.Router();
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
+const XLSX = require('xlsx');
 const { db, getSetting, setSetting, logActivity, createNotification } = require('../db');
 const {
-  parseExcelFile,
-  inspectAndParseSheet,
-  createCampaign,
-  dispatchCallToLead,
-  simulateCallToLead,
-  scheduleLeadFollowUp,
-  exportCampaignToExcelBuffer,
-  formatPhoneNumber
-} = require('../services/calling');
+  formatPhoneNumber,
+  isNumberSuppressed,
+  addToDoNotContact,
+  diagnoseVapi,
+  dispatchVapiCall,
+  syncCallDetails,
+  endVapiCall
+} = require('../services/vapi');
+const providerManager = require('../services/calling/providerManager');
+const {
+  startCampaign,
+  pauseCampaign,
+  stopCampaign,
+  retryLead,
+  activeCampaigns
+} = require('../services/campaignRunner');
+const {
+  inspectSpreadsheet,
+  importLeadsToCampaign
+} = require('../services/sheetImporter');
 
 // Ensure uploads directory exists
 const uploadsDir = path.join(__dirname, '../../uploads');
@@ -47,481 +59,224 @@ const upload = multer({
   }
 });
 
-// 1. Upload & Inspect Excel / CSV Sheet
-router.post('/upload-sheet', upload.single('sheet'), async (req, res) => {
+// ----------------------------------------------------
+// 0. SUMMARY DASHBOARD STATS (Real DB values only)
+// ----------------------------------------------------
+router.get('/stats', (req, res) => {
   try {
-    if (!req.file) {
-      return res.status(400).json({ success: false, error: 'No spreadsheet file uploaded.' });
-    }
-
-    const filePath = req.file.path;
-    const parsedData = inspectAndParseSheet(filePath);
+    const totalLeads = db.prepare('SELECT COUNT(*) as count FROM calling_leads').get().count;
+    const eligibleLeads = db.prepare("SELECT COUNT(*) as count FROM calling_leads WHERE do_not_contact = 0 AND call_status != 'dnc'").get().count;
+    const pendingCalls = db.prepare("SELECT COUNT(*) as count FROM calling_leads WHERE call_status = 'pending' AND do_not_contact = 0").get().count;
+    const inProgressCalls = db.prepare("SELECT COUNT(*) as count FROM calling_leads WHERE call_status = 'calling'").get().count;
+    const completedCalls = db.prepare("SELECT COUNT(*) as count FROM calling_leads WHERE call_status NOT IN ('pending', 'queued', 'calling')").get().count;
+    const interestedLeads = db.prepare("SELECT COUNT(*) as count FROM calling_leads WHERE call_status = 'interested'").get().count;
+    const failedCalls = db.prepare("SELECT COUNT(*) as count FROM calling_leads WHERE call_status IN ('failed', 'dnc')").get().count;
+    const followUpsDue = db.prepare(`
+      SELECT COUNT(*) as count FROM calling_leads 
+      WHERE follow_up_date IS NOT NULL 
+        AND follow_up_status = 'pending' 
+        AND do_not_contact = 0
+    `).get().count;
+    const totalCampaigns = db.prepare('SELECT COUNT(*) as count FROM calling_campaigns').get().count;
+    const totalCallLogs = db.prepare('SELECT COUNT(*) as count FROM call_logs').get().count;
 
     res.json({
       success: true,
-      fileName: req.file.originalname,
-      storedFileName: req.file.filename,
-      filePath,
-      sheetName: parsedData.sheetName,
-      totalRows: parsedData.totalRows,
-      validCallableLeads: parsedData.validCallableLeads,
-      excludedLeadsCount: parsedData.excludedLeadsCount,
-      missingPhoneCount: parsedData.missingPhoneCount,
-      missingConsentCount: parsedData.missingConsentCount,
-      duplicateCount: parsedData.duplicateCount,
-      skippedRowsCount: parsedData.skippedRowsCount,
-      detectedColumns: parsedData.detectedColumns,
-      headerRowIndex: parsedData.headerRowIndex,
-      suggestedMapping: parsedData.suggestedMapping,
-      currentMapping: parsedData.currentMapping,
-      sampleRows: parsedData.sampleRows,
-      validLeads: parsedData.validLeads
-    });
-  } catch (err) {
-    console.error('Error parsing uploaded sheet:', err);
-    res.status(500).json({ success: false, error: err.message || 'Failed to parse Excel sheet.' });
-  }
-});
-
-// 1.1 Apply Custom Column Mapping & Re-evaluate Leads
-router.post('/apply-mapping', (req, res) => {
-  try {
-    const { filePath, mapping, headerRowIndex } = req.body;
-    if (!filePath) {
-      return res.status(400).json({ success: false, error: 'filePath is required to re-map columns.' });
-    }
-
-    const parsedData = inspectAndParseSheet(filePath, mapping, headerRowIndex);
-
-    res.json({
-      success: true,
-      sheetName: parsedData.sheetName,
-      totalRows: parsedData.totalRows,
-      validCallableLeads: parsedData.validCallableLeads,
-      excludedLeadsCount: parsedData.excludedLeadsCount,
-      missingPhoneCount: parsedData.missingPhoneCount,
-      missingConsentCount: parsedData.missingConsentCount,
-      duplicateCount: parsedData.duplicateCount,
-      skippedRowsCount: parsedData.skippedRowsCount,
-      detectedColumns: parsedData.detectedColumns,
-      headerRowIndex: parsedData.headerRowIndex,
-      suggestedMapping: parsedData.suggestedMapping,
-      currentMapping: parsedData.currentMapping,
-      sampleRows: parsedData.sampleRows,
-      validLeads: parsedData.validLeads
-    });
-  } catch (err) {
-    console.error('Error applying column mapping:', err);
-    res.status(500).json({ success: false, error: err.message || 'Failed to apply column mapping.' });
-  }
-});
-
-// 1.2 Remove / Cleanup Uploaded Temporary Spreadsheet
-router.post('/cleanup-upload', (req, res) => {
-  try {
-    const { filePath } = req.body;
-    if (filePath) {
-      const normalized = path.normalize(filePath);
-      // Safety: Only delete files located in the uploads directory
-      if (normalized.includes('uploads') && fs.existsSync(normalized)) {
-        try { fs.unlinkSync(normalized); } catch {}
+      stats: {
+        totalLeads,
+        eligibleLeads,
+        pendingCalls,
+        inProgressCalls,
+        completedCalls,
+        interestedLeads,
+        failedCalls,
+        followUpsDue,
+        totalCampaigns,
+        totalCallLogs
       }
-    }
-    res.json({ success: true, message: 'Uploaded file cleaned up.' });
-  } catch (err) {
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 2. Create Calling Campaign from parsed leads
-router.post('/campaigns', (req, res) => {
-  try {
-    const { title, fileName, leads, customScript, delaySeconds } = req.body;
-    if (!leads || !Array.isArray(leads) || leads.length === 0) {
-      return res.status(400).json({ success: false, error: 'No leads provided to create campaign.' });
-    }
-
-    const result = createCampaign(title, fileName, leads, customScript, delaySeconds);
-
-    createNotification(
-      `Calling Campaign Created`,
-      `Campaign "${title}" created with ${result.totalLeads} leads (${result.callableLeads || result.totalLeads} callable).`,
-      'calling',
-      'info',
-      'calling',
-      result.campaignId
-    );
-
-    res.json({
-      success: true,
-      campaignId: result.campaignId,
-      totalLeads: result.totalLeads,
-      callableLeads: result.callableLeads,
-      excludedLeads: result.excludedLeads,
-      message: `Campaign created with ${result.callableLeads || result.totalLeads} callable leads!`
     });
   } catch (err) {
-    console.error('Error creating calling campaign:', err);
+    console.error('Error fetching calling stats:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 3. List All Calling Campaigns
-router.get('/campaigns', (req, res) => {
+// ----------------------------------------------------
+// 1. VAPI TELEPHONY DIAGNOSTICS & SYSTEM HEALTH
+// ----------------------------------------------------
+router.get('/diagnostics', async (req, res) => {
   try {
-    const campaigns = db.prepare(`
-      SELECT 
-        c.*,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id) as total_leads,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status != 'pending') as completed_calls,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'interested') as count_interested,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'needs_follow_up') as count_needs_follow_up,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'busy') as count_busy,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'completed') as count_completed,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'not_interested') as count_not_interested,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'pending') as count_pending
-      FROM calling_campaigns c
-      ORDER BY c.created_at DESC
-    `).all();
-
-    res.json({ success: true, campaigns });
+    const diagnostics = await diagnoseVapi();
+    res.json({ success: true, diagnostics });
   } catch (err) {
-    console.error('Error listing campaigns:', err);
+    console.error('Vapi diagnostics error:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 4. Get Single Campaign Details & Stats
-router.get('/campaigns/:id', (req, res) => {
+// ----------------------------------------------------
+// 1. MULTI-PROVIDER AI CALLING (VAPI, RETELL, OMNIDIMENSION)
+// ----------------------------------------------------
+router.get('/providers', async (req, res) => {
   try {
-    const campaignId = req.params.id;
-    const campaign = db.prepare(`
-      SELECT 
-        c.*,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id) as total_leads,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status != 'pending') as completed_calls,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'interested') as count_interested,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'needs_follow_up') as count_needs_follow_up,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'busy') as count_busy,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'completed') as count_completed,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'not_interested') as count_not_interested,
-        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'pending') as count_pending
-      FROM calling_campaigns c
-      WHERE c.id = ?
-    `).get(campaignId);
+    const activeProvider = providerManager.getActiveProviderId();
+    const providers = await providerManager.listProviders();
+    res.json({ success: true, activeProvider, providers });
+  } catch (err) {
+    console.error('Error listing providers:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
 
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
+router.post('/providers/active', (req, res) => {
+  try {
+    const { providerId } = req.body;
+    const result = providerManager.setActiveProviderId(providerId);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/providers/:provider/test', async (req, res) => {
+  try {
+    const result = await providerManager.testProvider(req.params.provider);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/providers/:provider/assistants', async (req, res) => {
+  try {
+    const assistants = await providerManager.listAssistants(req.params.provider);
+    res.json({ success: true, assistants });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/providers/:provider/phone-numbers', async (req, res) => {
+  try {
+    const phoneNumbers = await providerManager.listPhoneNumbers(req.params.provider);
+    res.json({ success: true, phoneNumbers });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/providers/:provider/config', (req, res) => {
+  try {
+    const result = providerManager.saveProviderConfig(req.params.provider, req.body);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Auto-select or fix default assistant and phone number
+router.post('/diagnostics/auto-configure', async (req, res) => {
+  try {
+    const diag = await diagnoseVapi();
+    if (!diag.apiKeyValid) {
+      return res.status(400).json({ success: false, error: 'Cannot auto-configure: Vapi API Key is invalid.' });
     }
 
-    res.json({ success: true, campaign });
+    if (diag.assistants.length > 0 && !getSetting('VAPI_ASSISTANT_ID')) {
+      setSetting('VAPI_ASSISTANT_ID', diag.assistants[0].id);
+    }
+    if (diag.phoneNumbers.length > 0 && !getSetting('VAPI_PHONE_NUMBER_ID')) {
+      setSetting('VAPI_PHONE_NUMBER_ID', diag.phoneNumbers[0].id);
+    }
+    setSetting('CALLING_MODE', 'live');
+
+    const updated = await diagnoseVapi();
+    res.json({ success: true, message: 'Vapi assistant & phone number auto-configured successfully.', diagnostics: updated });
   } catch (err) {
-    console.error('Error fetching campaign:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 5. Get Leads for a Campaign
-router.get('/campaigns/:id/leads', (req, res) => {
-  try {
-    const campaignId = req.params.id;
-    const { status, search } = req.query;
-
-    let query = `SELECT * FROM calling_leads WHERE campaign_id = ?`;
-    const params = [campaignId];
-
-    if (status && status !== 'all') {
-      query += ` AND call_status = ?`;
-      params.push(status);
-    }
-
-    if (search && search.trim()) {
-      query += ` AND (name LIKE ? OR phone_number LIKE ? OR email LIKE ? OR interest LIKE ?)`;
-      const term = `%${search.trim()}%`;
-      params.push(term, term, term, term);
-    }
-
-    query += ` ORDER BY id ASC`;
-
-    const leads = db.prepare(query).all(...params);
-    res.json({ success: true, leads });
-  } catch (err) {
-    console.error('Error fetching leads:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 6. Trigger AI Call to a Single Lead (Live Voice AI or Simulation)
+// ----------------------------------------------------
+// 2. INDIVIDUAL LEAD CALLING & MANAGEMENT
+// ----------------------------------------------------
 router.post('/leads/:id/call', async (req, res) => {
   try {
-    const leadId = req.params.id;
-    const callResult = await dispatchCallToLead(leadId);
-    res.json({ success: true, callResult });
+    const leadId = Number(req.params.id);
+    const { provider, customOpeningMessage, assistantId, fromNumber } = req.body;
+
+    const result = await providerManager.dispatchCall({
+      leadId,
+      providerId: provider,
+      customOpeningMessage,
+      assistantId,
+      fromNumber
+    });
+
+    res.json({ success: true, call: result });
   } catch (err) {
-    console.error('Error making call to lead:', err);
-    if (err.message && err.message.includes('not found')) {
-      return res.status(404).json({ success: false, error: err.message });
-    }
+    console.error(`Error calling lead #${req.params.id}:`, err.message);
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Retry a lead
+router.post('/leads/:id/retry', async (req, res) => {
+  try {
+    const leadId = Number(req.params.id);
+    const result = await retryLead(leadId);
+    res.json({ success: true, call: result });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Suppress a lead (Mark as Do Not Contact)
+router.post('/leads/:id/dnc', (req, res) => {
+  try {
+    const leadId = Number(req.params.id);
+    const lead = db.prepare('SELECT phone_number, name FROM calling_leads WHERE id = ?').get(leadId);
+    if (!lead) return res.status(404).json({ success: false, error: 'Lead not found' });
+
+    addToDoNotContact(lead.phone_number, req.body.reason || 'Manually marked Do Not Contact', 'crm_ui');
+    res.json({ success: true, message: `${lead.name} (${lead.phone_number}) marked as Do Not Contact.` });
+  } catch (err) {
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 6a. Get All Leads (Across campaigns or filtered)
+// Sync live call details from provider
+router.get('/calls/:callId/sync', async (req, res) => {
+  try {
+    const details = await providerManager.syncCall(req.params.callId, req.query.provider);
+    if (!details) return res.status(404).json({ success: false, error: 'Call not found' });
+    res.json({ success: true, call: details });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Terminate live call
+router.post('/calls/:callId/end', async (req, res) => {
+  try {
+    const success = await providerManager.endCall(req.params.callId, req.body.provider);
+    res.json({ success, message: success ? 'Call terminated successfully' : 'Failed to terminate call' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Fetch all calling leads with search and filters
 router.get('/leads', (req, res) => {
   try {
-    const { campaign_id, status, search, limit = 200 } = req.query;
-    let query = 'SELECT * FROM calling_leads WHERE 1=1';
-    const params = [];
-
-    if (campaign_id) {
-      query += ' AND campaign_id = ?';
-      params.push(Number(campaign_id));
-    }
-    if (status && status !== 'all') {
-      query += ' AND call_status = ?';
-      params.push(status);
-    }
-    if (search && search.trim()) {
-      query += ' AND (name LIKE ? OR phone_number LIKE ? OR email LIKE ? OR interest LIKE ?)';
-      const s = `%${search.trim()}%`;
-      params.push(s, s, s, s);
-    }
-
-    query += ' ORDER BY id DESC LIMIT ?';
-    params.push(Number(limit));
-
-    const leads = db.prepare(query).all(...params);
-    res.json({ success: true, leads });
-  } catch (err) {
-    console.error('Error fetching leads:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 6b. Add a Single Individual Lead Manually
-router.post('/leads', (req, res) => {
-  try {
-    const { campaign_id, name, phone_number, email, interest, notes, follow_up_date, follow_up_notes } = req.body;
-    if (!name || !phone_number) {
-      return res.status(400).json({ success: false, error: 'Lead name and phone number are required.' });
-    }
-
-    let cId = campaign_id ? Number(campaign_id) : null;
-    if (!cId) {
-      let defaultCamp = db.prepare("SELECT id FROM calling_campaigns WHERE title = 'Direct Inquiries & Manual Leads'").get();
-      if (!defaultCamp) {
-        const campRes = db.prepare(`
-          INSERT INTO calling_campaigns (title, file_name, total_leads, completed_calls, status, delay_seconds)
-          VALUES ('Direct Inquiries & Manual Leads', 'manual_entry', 0, 0, 'idle', 6)
-        `).run();
-        cId = Number(campRes.lastInsertRowid);
-      } else {
-        cId = defaultCamp.id;
-      }
-    }
-
-    const cleanPhone = formatPhoneNumber(phone_number);
-
-    const stmt = db.prepare(`
-      INSERT INTO calling_leads (
-        campaign_id, name, phone_number, email, interest, notes, call_status, follow_up_date, follow_up_notes
-      ) VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)
-    `);
-
-    const result = stmt.run(
-      cId,
-      name.trim(),
-      cleanPhone,
-      email ? email.trim() : null,
-      interest ? interest.trim() : 'Guitar & Music Inquiry',
-      notes ? notes.trim() : null,
-      follow_up_date || null,
-      follow_up_notes || null
-    );
-
-    const leadId = Number(result.lastInsertRowid);
-
-    // Update campaign total_leads count
-    db.prepare(`
-      UPDATE calling_campaigns 
-      SET total_leads = (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = ?)
-      WHERE id = ?
-    `).run(cId, cId);
-
-    const createdLead = db.prepare('SELECT * FROM calling_leads WHERE id = ?').get(leadId);
-    logActivity('calling', 'lead_added_manually', 'success', `Added individual lead ${name} (${cleanPhone})`);
-
-    res.json({ success: true, lead: createdLead, message: 'Individual lead added successfully!' });
-  } catch (err) {
-    console.error('Error adding individual lead:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 6c. Quick Direct Call to an Individual Number
-router.post('/call-direct', async (req, res) => {
-  try {
-    const { name, phone_number, email, interest, notes, campaign_id } = req.body;
-    if (!phone_number) {
-      return res.status(400).json({ success: false, error: 'Phone number is required to place a call.' });
-    }
-
-    const cleanPhone = formatPhoneNumber(phone_number);
-    const leadName = (name && name.trim()) ? name.trim() : 'Direct Caller';
-
-    let cId = campaign_id ? Number(campaign_id) : null;
-    if (!cId) {
-      let defaultCamp = db.prepare("SELECT id FROM calling_campaigns WHERE title = 'Direct Inquiries & Manual Leads'").get();
-      if (!defaultCamp) {
-        const campRes = db.prepare(`
-          INSERT INTO calling_campaigns (title, file_name, total_leads, completed_calls, status, delay_seconds)
-          VALUES ('Direct Inquiries & Manual Leads', 'manual_entry', 0, 0, 'idle', 6)
-        `).run();
-        cId = Number(campRes.lastInsertRowid);
-      } else {
-        cId = defaultCamp.id;
-      }
-    }
-
-    // Check if lead already exists with this phone
-    let lead = db.prepare('SELECT * FROM calling_leads WHERE phone_number = ? ORDER BY id DESC LIMIT 1').get(cleanPhone);
-    if (!lead) {
-      const insert = db.prepare(`
-        INSERT INTO calling_leads (
-          campaign_id, name, phone_number, email, interest, notes, call_status
-        ) VALUES (?, ?, ?, ?, ?, ?, 'pending')
-      `).run(
-        cId,
-        leadName,
-        cleanPhone,
-        email || null,
-        interest || 'Guitar Lessons Inquiry',
-        notes || 'Direct quick call'
-      );
-      lead = db.prepare('SELECT * FROM calling_leads WHERE id = ?').get(Number(insert.lastInsertRowid));
-    } else {
-      // Update name if provided
-      if (name && name.trim()) {
-        db.prepare('UPDATE calling_leads SET name = ? WHERE id = ?').run(leadName, lead.id);
-        lead.name = leadName;
-      }
-    }
-
-    // Now dispatch call immediately
-    const callResult = await dispatchCallToLead(lead.id);
-
-    res.json({
-      success: true,
-      lead,
-      callResult,
-      message: `Call placed to ${leadName} (${cleanPhone})`
-    });
-  } catch (err) {
-    console.error('Error placing direct individual call:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 7. Update Lead Status, Notes, or Follow-up manually
-router.put('/leads/:id', (req, res) => {
-  try {
-    const leadId = req.params.id;
-    const {
-      call_status,
-      notes,
-      follow_up_date,
-      follow_up_notes,
-      follow_up_status
-    } = req.body;
-
-    const current = db.prepare('SELECT * FROM calling_leads WHERE id = ?').get(leadId);
-    if (!current) {
-      return res.status(404).json({ success: false, error: 'Lead not found' });
-    }
-
-    db.prepare(`
-      UPDATE calling_leads
-      SET call_status = COALESCE(?, call_status),
-          notes = COALESCE(?, notes),
-          follow_up_date = COALESCE(?, follow_up_date),
-          follow_up_notes = COALESCE(?, follow_up_notes),
-          follow_up_status = COALESCE(?, follow_up_status),
-          updated_at = CURRENT_TIMESTAMP
-      WHERE id = ?
-    `).run(
-      call_status !== undefined ? call_status : current.call_status,
-      notes !== undefined ? notes : current.notes,
-      follow_up_date !== undefined ? follow_up_date : current.follow_up_date,
-      follow_up_notes !== undefined ? follow_up_notes : current.follow_up_notes,
-      follow_up_status !== undefined ? follow_up_status : current.follow_up_status,
-      leadId
-    );
-
-    const updated = db.prepare('SELECT * FROM calling_leads WHERE id = ?').get(leadId);
-    res.json({ success: true, lead: updated });
-  } catch (err) {
-    console.error('Error updating lead:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 8. Delete a Lead
-router.delete('/leads/:id', (req, res) => {
-  try {
-    const leadId = req.params.id;
-    const lead = db.prepare('SELECT * FROM calling_leads WHERE id = ?').get(leadId);
-    if (!lead) {
-      return res.status(404).json({ success: false, error: 'Lead not found' });
-    }
-
-    db.prepare('DELETE FROM calling_leads WHERE id = ?').run(leadId);
-    if (lead.campaign_id) {
-      db.prepare(`
-        UPDATE calling_campaigns
-        SET total_leads = (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = ?)
-        WHERE id = ?
-      `).run(lead.campaign_id, lead.campaign_id);
-    }
-
-    res.json({ success: true, message: 'Lead deleted successfully' });
-  } catch (err) {
-    console.error('Error deleting lead:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 9. Schedule Follow-up for a Lead
-router.post('/leads/:id/follow-up', (req, res) => {
-  try {
-    const leadId = req.params.id;
-    const { followUpDate, notes } = req.body;
-    if (!followUpDate) {
-      return res.status(400).json({ success: false, error: 'Follow-up date/time is required.' });
-    }
-
-    const updated = scheduleLeadFollowUp(leadId, followUpDate, notes || '');
-    res.json({ success: true, lead: updated });
-  } catch (err) {
-    console.error('Error scheduling follow-up:', err);
-    if (err.message && err.message.includes('not found')) {
-      return res.status(404).json({ success: false, error: err.message });
-    }
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 10. List All Follow-Ups across campaigns
-router.get('/follow-ups', (req, res) => {
-  try {
-    const { campaignId, status } = req.query;
-
+    const { campaignId, status, search, limit = 500, offset = 0 } = req.query;
     let query = `
       SELECT 
         l.*,
         c.title as campaign_title
       FROM calling_leads l
       LEFT JOIN calling_campaigns c ON l.campaign_id = c.id
-      WHERE (l.follow_up_date IS NOT NULL OR l.call_status = 'needs_follow_up')
+      WHERE 1=1
     `;
     const params = [];
 
@@ -531,265 +286,561 @@ router.get('/follow-ups', (req, res) => {
     }
 
     if (status && status !== 'all') {
-      query += ` AND l.follow_up_status = ?`;
+      query += ` AND l.call_status = ?`;
       params.push(status);
     }
 
-    query += ` ORDER BY l.follow_up_date ASC, l.updated_at DESC`;
-
-    const followUps = db.prepare(query).all(...params);
-
-    // Group into categories: Overdue, Today, Upcoming, Completed
-    const now = new Date();
-    const todayStr = now.toISOString().slice(0, 10);
-
-    const categorized = {
-      overdue: [],
-      today: [],
-      upcoming: [],
-      completed: []
-    };
-
-    followUps.forEach(f => {
-      if (f.follow_up_status === 'completed') {
-        categorized.completed.push(f);
-      } else if (!f.follow_up_date) {
-        categorized.today.push(f);
-      } else {
-        const dStr = f.follow_up_date.slice(0, 10);
-        if (dStr < todayStr) {
-          categorized.overdue.push(f);
-        } else if (dStr === todayStr) {
-          categorized.today.push(f);
-        } else {
-          categorized.upcoming.push(f);
-        }
-      }
-    });
-
-    res.json({
-      success: true,
-      followUps,
-      counts: {
-        total: followUps.length,
-        overdue: categorized.overdue.length,
-        today: categorized.today.length,
-        upcoming: categorized.upcoming.length,
-        completed: categorized.completed.length
-      },
-      categorized
-    });
-  } catch (err) {
-    console.error('Error fetching follow-ups:', err);
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-// 11. Export Campaign Results to Excel (.xlsx)
-router.get('/campaigns/:id/export', (req, res) => {
-  try {
-    const campaignId = req.params.id;
-    const campaign = db.prepare('SELECT * FROM calling_campaigns WHERE id = ?').get(campaignId);
-    if (!campaign) {
-      return res.status(404).json({ success: false, error: 'Campaign not found' });
+    if (search && search.trim()) {
+      query += ` AND (l.name LIKE ? OR l.phone_number LIKE ? OR l.email LIKE ? OR l.notes LIKE ? OR l.interest LIKE ?)`;
+      const term = `%${search.trim()}%`;
+      params.push(term, term, term, term, term);
     }
 
-    const buffer = exportCampaignToExcelBuffer(campaignId);
-    const cleanTitle = (campaign.title || 'campaign').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const filename = `${cleanTitle}_results_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    query += ` ORDER BY l.id DESC LIMIT ? OFFSET ?`;
+    params.push(Number(limit), Number(offset));
 
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.send(buffer);
+    const leads = db.prepare(query).all(...params);
+    res.json({ success: true, leads });
   } catch (err) {
-    console.error('Error exporting campaign to Excel:', err);
+    console.error('Error fetching leads:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 12. Delete Entire Campaign
+// Fetch single lead details with call history
+router.get('/leads/:id', (req, res) => {
+  try {
+    const lead = db.prepare(`
+      SELECT l.*, c.title as campaign_title 
+      FROM calling_leads l
+      LEFT JOIN calling_campaigns c ON l.campaign_id = c.id
+      WHERE l.id = ?
+    `).get(req.params.id);
+
+    if (!lead) return res.status(404).json({ success: false, error: 'Lead not found' });
+
+    // Fetch full call history for this lead
+    const callHistory = db.prepare(`
+      SELECT * FROM call_logs 
+      WHERE lead_id = ? OR phone_number = ?
+      ORDER BY datetime(created_at) DESC
+    `).all(lead.id, lead.phone_number);
+
+    res.json({ success: true, lead, callHistory });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Create single manual lead
+router.post('/leads', (req, res) => {
+  try {
+    const { name, phone_number, email, company, interest, notes, campaign_id, provider } = req.body;
+    if (!phone_number) return res.status(400).json({ success: false, error: 'Phone number is required.' });
+
+    const cleanPhone = formatPhoneNumber(phone_number);
+    const isDnd = isNumberSuppressed(cleanPhone) ? 1 : 0;
+    const resolvedProvider = provider || providerManager.getActiveProviderId();
+
+    const stmt = db.prepare(`
+      INSERT INTO calling_leads (
+        campaign_id, name, phone_number, email, company, interest, notes, 
+        lead_source, call_status, do_not_contact, provider
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, 'manual', ?, ?, ?)
+    `);
+
+    const result = stmt.run(
+      campaign_id ? Number(campaign_id) : null,
+      name ? name.trim() : 'Unnamed Lead',
+      cleanPhone,
+      email ? email.trim() : null,
+      company ? company.trim() : null,
+      interest ? interest.trim() : 'General Inquiry',
+      notes ? notes.trim() : null,
+      isDnd ? 'dnc' : 'pending',
+      isDnd,
+      resolvedProvider
+    );
+
+    const leadId = Number(result.lastInsertRowid);
+    const lead = db.prepare('SELECT * FROM calling_leads WHERE id = ?').get(leadId);
+    res.json({ success: true, lead });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Update lead
+router.put('/leads/:id', (req, res) => {
+  try {
+    const { name, phone_number, email, company, interest, notes, call_status, follow_up_date, follow_up_notes } = req.body;
+    
+    db.prepare(`
+      UPDATE calling_leads
+      SET name = COALESCE(?, name),
+          phone_number = COALESCE(?, phone_number),
+          email = COALESCE(?, email),
+          company = COALESCE(?, company),
+          interest = COALESCE(?, interest),
+          notes = COALESCE(?, notes),
+          call_status = COALESCE(?, call_status),
+          follow_up_date = COALESCE(?, follow_up_date),
+          follow_up_notes = COALESCE(?, follow_up_notes),
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(
+      name ? name.trim() : null,
+      phone_number ? formatPhoneNumber(phone_number) : null,
+      email ? email.trim() : null,
+      company ? company.trim() : null,
+      interest ? interest.trim() : null,
+      notes ? notes.trim() : null,
+      call_status || null,
+      follow_up_date || null,
+      follow_up_notes || null,
+      req.params.id
+    );
+
+    const updated = db.prepare('SELECT * FROM calling_leads WHERE id = ?').get(req.params.id);
+    res.json({ success: true, lead: updated });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// Delete lead
+router.delete('/leads/:id', (req, res) => {
+  try {
+    db.prepare('DELETE FROM calling_leads WHERE id = ?').run(req.params.id);
+    res.json({ success: true, message: 'Lead deleted successfully' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// 3. EXCEL / CSV BULK LEAD IMPORT WORKFLOW
+// ----------------------------------------------------
+router.post('/upload-sheet', upload.single('sheet'), async (req, res) => {
+  try {
+    if (!req.file) {
+      return res.status(400).json({ success: false, error: 'No file uploaded.' });
+    }
+
+    const inspection = inspectSpreadsheet(req.file.path);
+    res.json({
+      success: true,
+      filePath: req.file.path,
+      fileName: req.file.originalname,
+      ...inspection
+    });
+  } catch (err) {
+    console.error('Error uploading sheet:', err);
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Re-apply custom mapping on an uploaded spreadsheet
+router.post('/apply-mapping', (req, res) => {
+  try {
+    const { filePath, mapping } = req.body;
+    if (!filePath || !fs.existsSync(filePath)) {
+      return res.status(400).json({ success: false, error: 'Spreadsheet file session has expired. Please re-upload.' });
+    }
+
+    const inspection = inspectSpreadsheet(filePath, mapping);
+    res.json({ success: true, ...inspection });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+// Confirm import and create campaign queue
+router.post('/import-confirmed', (req, res) => {
+  try {
+    const { campaignTitle, fileName, leads, customScript, delaySeconds, assistantId, provider } = req.body;
+    if (!leads || !Array.isArray(leads) || leads.length === 0) {
+      return res.status(400).json({ success: false, error: 'No leads provided for import.' });
+    }
+
+    const resolvedProvider = provider || providerManager.getActiveProviderId();
+
+    const imported = importLeadsToCampaign({
+      campaignTitle,
+      fileName,
+      leads,
+      customScript,
+      delaySeconds,
+      assistantId,
+      provider: resolvedProvider
+    });
+
+    res.json({ success: true, ...imported });
+  } catch (err) {
+    console.error('Error importing leads:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// 4. CAMPAIGN CONTROLS (START / PAUSE / RESUME / STOP)
+// ----------------------------------------------------
+router.get('/campaigns', (req, res) => {
+  try {
+    const campaigns = db.prepare(`
+      SELECT 
+        c.*,
+        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id) as total_lead_count,
+        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'pending') as pending_count,
+        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status NOT IN ('pending', 'queued', 'calling')) as completed_count,
+        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status = 'interested') as interested_count,
+        (SELECT COUNT(*) FROM calling_leads WHERE campaign_id = c.id AND call_status IN ('failed', 'dnc')) as failed_count
+      FROM calling_campaigns c
+      ORDER BY c.id DESC
+    `).all();
+
+    res.json({ success: true, campaigns });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/campaigns/:id', (req, res) => {
+  try {
+    const campaign = db.prepare('SELECT * FROM calling_campaigns WHERE id = ?').get(req.params.id);
+    if (!campaign) return res.status(404).json({ success: false, error: 'Campaign not found' });
+    res.json({ success: true, campaign });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/campaigns/:id/start', async (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const result = await startCampaign(campaignId);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/campaigns/:id/pause', (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const result = pauseCampaign(campaignId);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/campaigns/:id/stop', (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const result = stopCampaign(campaignId);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
 router.delete('/campaigns/:id', (req, res) => {
   try {
-    const campaignId = req.params.id;
+    const campaignId = Number(req.params.id);
+    stopCampaign(campaignId);
     db.prepare('DELETE FROM calling_leads WHERE campaign_id = ?').run(campaignId);
     db.prepare('DELETE FROM calling_campaigns WHERE id = ?').run(campaignId);
-    res.json({ success: true, message: 'Campaign and its leads deleted successfully.' });
+    res.json({ success: true, message: 'Campaign and associated leads deleted' });
   } catch (err) {
-    console.error('Error deleting campaign:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 13. Get Calling Settings
+// Export campaign leads to Excel buffer
+router.get('/campaigns/:id/export', (req, res) => {
+  try {
+    const campaignId = Number(req.params.id);
+    const campaign = db.prepare('SELECT * FROM calling_campaigns WHERE id = ?').get(campaignId);
+    const leads = db.prepare('SELECT * FROM calling_leads WHERE campaign_id = ? ORDER BY id ASC').all(campaignId);
+
+    const exportRows = leads.map((l, idx) => ({
+      'No.': idx + 1,
+      'Name': l.name,
+      'Phone': l.phone_number,
+      'Email': l.email || '',
+      'Company': l.company || '',
+      'Call Status': l.call_status,
+      'Last Outcome': l.last_call_outcome || '',
+      'Duration (sec)': l.call_duration || 0,
+      'Follow-up Date': l.follow_up_date || '',
+      'Follow-up Notes': l.follow_up_notes || '',
+      'Notes': l.notes || ''
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(exportRows);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Campaign Leads');
+    const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="campaign_${campaignId}_leads.xlsx"`);
+    res.send(buffer);
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// 5. CALL HISTORY & TRANSCRIPTS
+// ----------------------------------------------------
+router.get('/history', (req, res) => {
+  try {
+    const { limit = 200, status, search, campaignId, provider } = req.query;
+    let query = `
+      SELECT 
+        l.*,
+        c.title as campaign_title
+      FROM call_logs l
+      LEFT JOIN calling_campaigns c ON l.campaign_id = c.id
+      WHERE 1=1
+    `;
+    const params = [];
+
+    if (status && status !== 'all') {
+      query += ` AND l.status = ?`;
+      params.push(status);
+    }
+
+    if (provider && provider !== 'all') {
+      query += ` AND l.provider = ?`;
+      params.push(provider);
+    }
+
+    if (campaignId && campaignId !== 'all') {
+      query += ` AND l.campaign_id = ?`;
+      params.push(campaignId);
+    }
+
+    if (search && search.trim()) {
+      query += ` AND (l.lead_name LIKE ? OR l.phone_number LIKE ? OR l.outcome LIKE ? OR l.transcript LIKE ? OR l.ai_summary LIKE ?)`;
+      const term = `%${search.trim()}%`;
+      params.push(term, term, term, term, term);
+    }
+
+    query += ` ORDER BY l.created_at DESC LIMIT ?`;
+    params.push(Number(limit));
+
+    const logs = db.prepare(query).all(...params);
+    res.json({ success: true, logs });
+  } catch (err) {
+    console.error('Error fetching call history:', err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// 6. FOLLOW-UP MANAGEMENT
+// ----------------------------------------------------
+router.get('/follow-ups', (req, res) => {
+  try {
+    const followUps = db.prepare(`
+      SELECT 
+        l.id as lead_id,
+        l.name as lead_name,
+        l.phone_number,
+        l.email,
+        l.follow_up_date,
+        l.follow_up_notes,
+        l.follow_up_status,
+        l.call_status,
+        l.last_call_outcome,
+        l.last_called_at,
+        c.id as campaign_id,
+        c.title as campaign_title
+      FROM calling_leads l
+      LEFT JOIN calling_campaigns c ON l.campaign_id = c.id
+      WHERE l.follow_up_date IS NOT NULL 
+        AND l.do_not_contact = 0
+      ORDER BY datetime(l.follow_up_date) ASC
+    `).all();
+
+    res.json({ success: true, followUps });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/leads/:id/follow-up', (req, res) => {
+  try {
+    const { follow_up_date, notes } = req.body;
+    db.prepare(`
+      UPDATE calling_leads 
+      SET follow_up_date = ?,
+          follow_up_notes = ?,
+          follow_up_status = 'pending',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(follow_up_date, notes || null, req.params.id);
+
+    res.json({ success: true, message: 'Follow-up saved' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/follow-ups/:leadId/complete', (req, res) => {
+  try {
+    db.prepare(`
+      UPDATE calling_leads 
+      SET follow_up_status = 'completed',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(req.params.leadId);
+    res.json({ success: true, message: 'Follow-up completed' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/follow-ups/:leadId/cancel', (req, res) => {
+  try {
+    db.prepare(`
+      UPDATE calling_leads 
+      SET follow_up_status = 'cancelled',
+          updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(req.params.leadId);
+    res.json({ success: true, message: 'Follow-up cancelled' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// 7. DO NOT CONTACT (DND / SUPPRESSION) LIST
+// ----------------------------------------------------
+router.get('/dnc', (req, res) => {
+  try {
+    const list = db.prepare('SELECT * FROM do_not_contact ORDER BY created_at DESC').all();
+    res.json({ success: true, list });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.post('/dnc', (req, res) => {
+  try {
+    const { phone_number, reason } = req.body;
+    if (!phone_number) return res.status(400).json({ success: false, error: 'Phone number required' });
+
+    addToDoNotContact(phone_number, reason || 'Manually added to suppression list', 'manual');
+    res.json({ success: true, message: 'Phone number added to Do Not Contact list' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+router.delete('/dnc/:id', (req, res) => {
+  try {
+    const row = db.prepare('SELECT phone_number FROM do_not_contact WHERE id = ?').get(req.params.id);
+    if (row) {
+      db.prepare('DELETE FROM do_not_contact WHERE id = ?').run(req.params.id);
+      db.prepare('UPDATE calling_leads SET do_not_contact = 0 WHERE phone_number = ?').run(row.phone_number);
+    }
+    res.json({ success: true, message: 'Number removed from Do Not Contact list' });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// ----------------------------------------------------
+// 8. CALLER KNOWLEDGE & TELEPHONY SETTINGS
+// ----------------------------------------------------
 router.get('/settings', (req, res) => {
   try {
-    const agentName = getSetting('CALLING_AGENT_NAME') || 'Aria (Sneharmony AI Caller)';
-    const defaultScript = getSetting('CALLING_DEFAULT_SCRIPT') || 'Hello {name}! This is Aria from Sneha Harmony calling to see if you had any questions about our music classes or guitar sessions.';
-    const systemPrompt = getSetting('CALLING_SYSTEM_PROMPT') || '';
-    const delayBetweenCalls = Number(getSetting('CALLING_DELAY_BETWEEN_CALLS')) || 8;
-    const voiceGender = getSetting('CALLING_VOICE_GENDER') || 'female';
-    const callingMode = getSetting('CALLING_MODE') || 'simulation';
-    const callingProvider = getSetting('CALLING_PROVIDER') || 'vapi';
-    const vapiApiKey = getSetting('VAPI_API_KEY') || '';
-    const vapiPhoneNumberId = getSetting('VAPI_PHONE_NUMBER_ID') || '';
-    const vapiAssistantId = getSetting('VAPI_ASSISTANT_ID') || '';
-    const twilioAccountSid = getSetting('TWILIO_ACCOUNT_SID') || '';
-    const twilioAuthToken = getSetting('TWILIO_AUTH_TOKEN') || '';
-    const twilioPhoneNumber = getSetting('TWILIO_PHONE_NUMBER') || '';
+    const settings = {
+      ACTIVE_CALLING_PROVIDER: providerManager.getActiveProviderId(),
+      CALLING_MODE: getSetting('CALLING_MODE') || 'live',
+      CALLING_PROVIDER: getSetting('CALLING_PROVIDER') || 'vapi',
+      VAPI_API_KEY: getSetting('VAPI_API_KEY') || '',
+      VAPI_PHONE_NUMBER_ID: getSetting('VAPI_PHONE_NUMBER_ID') || '',
+      VAPI_ASSISTANT_ID: getSetting('VAPI_ASSISTANT_ID') || '',
+      RETELL_API_KEY: getSetting('RETELL_API_KEY') || '',
+      RETELL_AGENT_ID: getSetting('RETELL_AGENT_ID') || '',
+      RETELL_PHONE_NUMBER: getSetting('RETELL_PHONE_NUMBER') || '',
+      OMNIDIMENSION_API_KEY: getSetting('OMNIDIMENSION_API_KEY') || '',
+      OMNIDIMENSION_AGENT_ID: getSetting('OMNIDIMENSION_AGENT_ID') || '',
+      OMNIDIMENSION_PHONE_NUMBER: getSetting('OMNIDIMENSION_PHONE_NUMBER') || '',
+      OMNIDIMENSION_BASE_URL: getSetting('OMNIDIMENSION_BASE_URL') || 'https://omnidim.io/api/v1',
+      CALLING_AGENT_NAME: getSetting('CALLING_AGENT_NAME') || 'Aria',
+      CALLING_AGENT_VOICE: getSetting('CALLING_AGENT_VOICE') || 'Elliot',
+      CALLING_COMPANY_NAME: getSetting('CALLING_COMPANY_NAME') || '',
+      CALLING_BUSINESS_DESCRIPTION: getSetting('CALLING_BUSINESS_DESCRIPTION') || '',
+      CALLING_PRODUCT_DETAILS: getSetting('CALLING_PRODUCT_DETAILS') || '',
+      CALLING_PRICING: getSetting('CALLING_PRICING') || '',
+      CALLING_OFFERS: getSetting('CALLING_OFFERS') || '',
+      CALLING_ELIGIBILITY: getSetting('CALLING_ELIGIBILITY') || '',
+      CALLING_FAQS: getSetting('CALLING_FAQS') || '',
+      CALLING_SALES_OBJECTIVES: getSetting('CALLING_SALES_OBJECTIVES') || '',
+      CALLING_DEFAULT_SCRIPT: getSetting('CALLING_DEFAULT_SCRIPT') || '',
+      CALLING_QUALIFICATION_QUESTIONS: getSetting('CALLING_QUALIFICATION_QUESTIONS') || '',
+      CALLING_OBJECTION_HANDLING: getSetting('CALLING_OBJECTION_HANDLING') || '',
+      CALLING_HUMAN_HANDOFF_CONTACT: getSetting('CALLING_HUMAN_HANDOFF_CONTACT') || '',
+      CALLING_CLOSING_MESSAGE: getSetting('CALLING_CLOSING_MESSAGE') || '',
+      CALLING_DELAY_BETWEEN_CALLS: getSetting('CALLING_DELAY_BETWEEN_CALLS') || '8',
+      CALLING_MAX_ATTEMPTS: getSetting('CALLING_MAX_ATTEMPTS') || '3',
+      CALLING_WINDOW_START: getSetting('CALLING_WINDOW_START') || '10:00',
+      CALLING_WINDOW_END: getSetting('CALLING_WINDOW_END') || '19:00',
+      CALLING_TIMEZONE: getSetting('CALLING_TIMEZONE') || 'Asia/Kolkata',
+      CALLING_RECORDING_ENABLED: getSetting('CALLING_RECORDING_ENABLED') || '1',
+      TWILIO_ACCOUNT_SID: getSetting('TWILIO_ACCOUNT_SID') || '',
+      TWILIO_AUTH_TOKEN: getSetting('TWILIO_AUTH_TOKEN') || '',
+      TWILIO_PHONE_NUMBER: getSetting('TWILIO_PHONE_NUMBER') || ''
+    };
 
-    res.json({
-      success: true,
-      settings: {
-        agentName,
-        defaultScript,
-        systemPrompt,
-        delayBetweenCalls,
-        voiceGender,
-        callingMode,
-        callingProvider,
-        vapiApiKey: vapiApiKey ? '••••••••••••••••' : '',
-        vapiPhoneNumberId,
-        vapiAssistantId,
-        twilioAccountSid,
-        twilioAuthToken: twilioAuthToken ? '••••••••••••••••' : '',
-        twilioPhoneNumber
-      }
-    });
+    res.json({ success: true, settings });
   } catch (err) {
-    console.error('Error fetching calling settings:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 14. Update Calling Settings
 router.post('/settings', (req, res) => {
   try {
-    const {
-      agentName,
-      defaultScript,
-      systemPrompt,
-      delayBetweenCalls,
-      voiceGender,
-      callingMode,
-      callingProvider,
-      vapiApiKey,
-      vapiPhoneNumberId,
-      vapiAssistantId,
-      twilioAccountSid,
-      twilioAuthToken,
-      twilioPhoneNumber
-    } = req.body;
+    const newSettings = req.body;
+    for (const [k, v] of Object.entries(newSettings)) {
+      if (typeof v === 'string' || typeof v === 'number') {
+        setSetting(k, String(v));
+      }
+    }
 
-    if (agentName !== undefined) setSetting('CALLING_AGENT_NAME', agentName);
-    if (defaultScript !== undefined) setSetting('CALLING_DEFAULT_SCRIPT', defaultScript);
-    if (systemPrompt !== undefined) setSetting('CALLING_SYSTEM_PROMPT', systemPrompt);
-    if (delayBetweenCalls !== undefined) setSetting('CALLING_DELAY_BETWEEN_CALLS', String(delayBetweenCalls));
-    if (voiceGender !== undefined) setSetting('CALLING_VOICE_GENDER', voiceGender);
-    if (callingMode !== undefined) setSetting('CALLING_MODE', callingMode);
-    if (callingProvider !== undefined) setSetting('CALLING_PROVIDER', callingProvider);
-    if (vapiApiKey !== undefined && !vapiApiKey.includes('••••')) setSetting('VAPI_API_KEY', vapiApiKey.trim());
-    if (vapiPhoneNumberId !== undefined) setSetting('VAPI_PHONE_NUMBER_ID', vapiPhoneNumberId.trim());
-    if (vapiAssistantId !== undefined) setSetting('VAPI_ASSISTANT_ID', vapiAssistantId.trim());
-    if (twilioAccountSid !== undefined) setSetting('TWILIO_ACCOUNT_SID', twilioAccountSid.trim());
-    if (twilioAuthToken !== undefined && !twilioAuthToken.includes('••••')) setSetting('TWILIO_AUTH_TOKEN', twilioAuthToken.trim());
-    if (twilioPhoneNumber !== undefined) setSetting('TWILIO_PHONE_NUMBER', twilioPhoneNumber.trim());
-
-    res.json({ success: true, message: 'Calling agent and Voice AI settings updated!' });
+    logActivity('calling', 'settings_updated', 'success', 'Updated AI Telecaller knowledge & voice configuration.');
+    res.json({ success: true, message: 'Calling settings saved successfully' });
   } catch (err) {
-    console.error('Error saving calling settings:', err);
     res.status(500).json({ success: false, error: err.message });
   }
 });
 
-// 15. Webhook for Vapi.ai (End of Call Reports & Transcripts)
-router.post('/webhook/vapi', (req, res) => {
+// ----------------------------------------------------
+// 9. MULTI-PROVIDER WEBHOOK HANDLERS (VAPI, RETELL, OMNIDIMENSION)
+// ----------------------------------------------------
+const handleProviderWebhook = (providerId) => async (req, res) => {
   try {
-    const configuredSecret = getSetting('VAPI_WEBHOOK_SECRET');
-    if (configuredSecret) {
-      const providedSecret = req.headers['x-vapi-secret'] || req.query.secret;
-      if (providedSecret !== configuredSecret) {
-        return res.status(401).json({ error: 'Unauthorized webhook secret' });
-      }
-    }
-
-    const payload = req.body;
-    const message = payload?.message;
-    if (message?.type === 'end-of-call-report' || message?.type === 'call-ended') {
-      const call = message.call;
-      const callId = call?.id;
-      const duration = message.durationSeconds || call?.duration || 0;
-      const transcript = message.transcript || call?.transcript || '';
-      const summary = message.analysis?.summary || message.summary || '';
-      const recordingUrl = message.recordingUrl || call?.recordingUrl || '';
-
-      if (callId) {
-        let status = 'completed';
-        const lower = (summary + ' ' + transcript).toLowerCase();
-        if (lower.includes('interested') || lower.includes('send brochure') || lower.includes('fees') || lower.includes('trial')) {
-          status = 'interested';
-        } else if (lower.includes('call back') || lower.includes('callback') || lower.includes('driving') || lower.includes('busy')) {
-          status = 'needs_follow_up';
-        } else if (lower.includes('voicemail') || lower.includes('no answer') || lower.includes('unanswered')) {
-          status = 'busy';
-        } else if (lower.includes('not interested') || lower.includes('wrong number')) {
-          status = 'not_interested';
-        }
-
-        db.prepare(`
-          UPDATE calling_leads
-          SET call_status = ?,
-              call_duration = ?,
-              call_transcript = COALESCE(?, call_transcript),
-              recording_url = COALESCE(?, recording_url),
-              updated_at = CURRENT_TIMESTAMP
-          WHERE external_call_id = ?
-        `).run(status, Math.round(duration), transcript, recordingUrl, callId);
-
-        db.prepare(`
-          UPDATE call_logs
-          SET status = ?,
-              duration = ?,
-              transcript = COALESCE(?, transcript),
-              outcome = COALESCE(?, outcome),
-              recording_url = COALESCE(?, recording_url)
-          WHERE external_call_id = ?
-        `).run(status, Math.round(duration), transcript, summary || status, recordingUrl, callId);
-
-        logActivity('calling', 'vapi_call_ended', 'success', `Vapi call ${callId} ended: ${status} (${Math.round(duration)}s)`);
-      }
-    }
-    res.json({ received: true });
+    console.log(`[${providerId.toUpperCase()} Webhook Received] Payload keys:`, Object.keys(req.body || {}));
+    const result = await providerManager.processWebhook(providerId, req.body, req.headers);
+    res.status(200).json(result);
   } catch (err) {
-    console.error('Vapi webhook error:', err);
-    res.status(500).json({ error: err.message });
+    console.error(`[${providerId}] Webhook processing warning:`, err.message);
+    res.status(200).json({ received: true, warning: err.message });
   }
+};
+
+router.post('/webhook/vapi', handleProviderWebhook('vapi'));
+router.post('/webhook/retell', handleProviderWebhook('retell'));
+router.post('/webhook/omnidimension', handleProviderWebhook('omnidimension'));
+router.post('/webhook/:provider', async (req, res) => {
+  return handleProviderWebhook(req.params.provider)(req, res);
 });
-
-// 16. Webhook for Twilio Status Callbacks
-router.post('/webhook/twilio', (req, res) => {
-  try {
-    const { CallSid, CallStatus, CallDuration, RecordingUrl } = req.body;
-    if (CallSid) {
-      let status = 'completed';
-      if (CallStatus === 'busy' || CallStatus === 'no-answer') status = 'busy';
-      else if (CallStatus === 'failed') status = 'not_interested';
-
-      db.prepare(`
-        UPDATE calling_leads
-        SET call_status = ?,
-            call_duration = COALESCE(?, call_duration),
-            recording_url = COALESCE(?, recording_url),
-            updated_at = CURRENT_TIMESTAMP
-        WHERE external_call_id = ?
-      `).run(status, Number(CallDuration) || 0, RecordingUrl || null, CallSid);
-
-      logActivity('calling', 'twilio_call_status', 'success', `Twilio call ${CallSid} status: ${CallStatus}`);
-    }
-    res.type('text/xml').send('<Response/>');
-  } catch (err) {
-    console.error('Twilio webhook error:', err);
-    res.status(500).send(err.message);
-  }
-});
+router.post('/webhook', handleProviderWebhook('vapi'));
 
 module.exports = router;

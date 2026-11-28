@@ -10,6 +10,98 @@ const {
   stopTelegramPolling 
 } = require('../services/telegram');
 
+// GET /api/telegram/status (Real configuration, channel verification, history & logs)
+router.get('/status', async (req, res) => {
+  try {
+    const botToken = getSetting('TELEGRAM_BOT_TOKEN');
+    const channelId = getSetting('TELEGRAM_CHANNEL_ID');
+
+    let bot = null;
+    let channel = null;
+    let botConnected = false;
+    let channelVerified = false;
+    let permissionStatus = 'Not Connected';
+    let errorMessage = null;
+
+    if (botToken) {
+      try {
+        bot = await verifyTelegramBot(botToken);
+        botConnected = true;
+      } catch (e) {
+        botConnected = false;
+        errorMessage = e.message;
+      }
+    }
+
+    if (botConnected && channelId) {
+      try {
+        channel = await verifyTelegramChannel(channelId, botToken);
+        channelVerified = true;
+        permissionStatus = channel.canPost ? 'Administrator (Can Post)' : channel.status || 'Member';
+      } catch (e) {
+        channelVerified = false;
+        permissionStatus = `Verification Error: ${e.message}`;
+      }
+    }
+
+    // Real publishing history from scheduled_posts
+    const publishingHistory = db.prepare(`
+      SELECT * FROM scheduled_posts 
+      WHERE platform = 'telegram' OR channel_id LIKE '%tg_%' OR channel_id LIKE '%-100%'
+      ORDER BY created_at DESC 
+      LIMIT 30
+    `).all();
+
+    // Real error and activity logs
+    const logs = db.prepare(`
+      SELECT * FROM activity_logs 
+      WHERE platform = 'telegram' OR event_type LIKE '%telegram%'
+      ORDER BY created_at DESC 
+      LIMIT 40
+    `).all();
+
+    res.json({
+      success: true,
+      botConnected,
+      bot,
+      botUsername: bot?.username ? `@${bot.username}` : getSetting('TELEGRAM_BOT_USERNAME') || null,
+      channelId: channelId || null,
+      channelTitle: channel?.title || 'For real',
+      channelVerified,
+      permissionStatus,
+      errorMessage,
+      publishingHistory,
+      logs
+    });
+  } catch (err) {
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// POST /api/telegram/test-connection (Send a test ping message to the configured channel)
+router.post('/test-connection', async (req, res) => {
+  try {
+    const channelId = getSetting('TELEGRAM_CHANNEL_ID');
+    const botToken = getSetting('TELEGRAM_BOT_TOKEN');
+    if (!botToken) {
+      return res.status(400).json({ success: false, error: 'Telegram Bot Token is not configured.' });
+    }
+    if (!channelId) {
+      return res.status(400).json({ success: false, error: 'Telegram Channel ID is not configured.' });
+    }
+
+    const testMsg = `🔔 SocialManager Connection Test\nTimestamp: ${new Date().toISOString()}\nStatus: Connected & Verified ✅`;
+    const result = await sendTelegramMessage(channelId, testMsg);
+
+    logActivity('telegram', 'test_connection', 'success', `Sent test ping message to Telegram channel ${channelId}`);
+
+    res.json({ success: true, message: 'Test message delivered to Telegram channel successfully!', result });
+  } catch (err) {
+    logActivity('telegram', 'test_connection', 'error', `Test message failed: ${err.message}`);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // POST /api/telegram/verify (Verify bot token and get details)
 router.post('/verify', async (req, res) => {
   try {

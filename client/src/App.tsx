@@ -4,17 +4,15 @@ import { Header } from './components/Header';
 import { OverviewView } from './components/OverviewView';
 import { ChannelsView } from './components/ChannelsView';
 import { RulesView } from './components/RulesView';
-import { SchedulerView } from './components/SchedulerView';
+import { ContentPublishingView } from './components/ContentPublishingView';
 import { InboxView } from './components/InboxView';
-import { WhatsAppView } from './components/WhatsAppView';
-import { InstagramView } from './components/InstagramView';
-import { TelegramView } from './components/TelegramView';
 import { CallingAgentView } from './components/CallingAgentView';
 import { SettingsView } from './components/SettingsView';
 import { CrmView } from './components/CrmView';
 import { AutomationsView } from './components/AutomationsView';
 import { AnalyticsView } from './components/AnalyticsView';
 import { ActivityLogView } from './components/ActivityLogView';
+import { NotificationsView } from './components/NotificationsView';
 import { CopilotDrawer } from './components/CopilotDrawer';
 import { api } from './api';
 import type { DashboardStats, ActivityLog, Channel, Rule, ScheduledPost, CommentItem } from './types';
@@ -39,6 +37,7 @@ export const App: React.FC = () => {
   const [rules, setRules] = useState<Rule[]>([]);
   const [posts, setPosts] = useState<ScheduledPost[]>([]);
   const [comments, setComments] = useState<CommentItem[]>([]);
+  const [unreadNotificationsCount, setUnreadNotificationsCount] = useState(0);
 
   // Modals
   const [showCreateRuleModal, setShowCreateRuleModal] = useState(false);
@@ -50,12 +49,13 @@ export const App: React.FC = () => {
   // Load initial data
   const refreshAllData = async () => {
     try {
-      const [statsData, channelsData, rulesData, postsData, commentsData] = await Promise.all([
+      const [statsData, channelsData, rulesData, postsData, commentsData, notifsData] = await Promise.all([
         api.getStats().catch(() => ({ stats: { activeChannels: 0, activeRules: 0, totalReplies: 0, pendingScheduled: 0, totalComments: 0 }, recentLogs: [] })),
         api.getChannels().catch(() => []),
         api.getRules().catch(() => []),
         api.getPosts().catch(() => []),
-        api.getComments('all').catch(() => [])
+        api.getComments('all').catch(() => []),
+        api.getNotifications({ limit: 1 }).catch(() => ({ unreadCount: 0 }))
       ]);
 
       if (statsData) {
@@ -66,6 +66,9 @@ export const App: React.FC = () => {
       setRules(rulesData);
       setPosts(postsData);
       setComments(commentsData);
+      if (notifsData) {
+        setUnreadNotificationsCount(notifsData.unreadCount || 0);
+      }
     } finally {
       setLoading(false);
     }
@@ -105,8 +108,10 @@ export const App: React.FC = () => {
     switch (currentTab) {
       case 'overview':
         return { title: 'Overview', subtitle: 'Live automation metrics and real-time operations health' };
+      case 'content-publishing':
       case 'scheduler':
-        return { title: 'Content & Scheduler', subtitle: 'Compose, preview, and schedule multi-platform posts' };
+      case 'content-studio':
+        return { title: 'Content & Publishing', subtitle: 'Unified multi-platform publishing, scheduled posts, drafts, and calendar' };
       case 'inbox':
         return { title: 'Unified Inbox', subtitle: 'Cross-platform conversation stream, sentiment analysis, and AI replies' };
       case 'crm':
@@ -114,23 +119,17 @@ export const App: React.FC = () => {
       case 'automations':
         return { title: 'AI Automations Builder', subtitle: 'Visual triggers, conditions, prebuilt templates, and sandbox simulation' };
       case 'calling':
-        return { title: 'AI Calling Agent & Auto-Dialer', subtitle: 'Outbound voice calling, lead compliance safeguards, and call logs' };
+        return { title: 'AI Calling Agent', subtitle: 'AI Voice Calling, automated campaigns, and verified lead management' };
       case 'analytics':
         return { title: 'Performance Analytics', subtitle: 'Real platform metrics, engagement timeseries, and conversion rates' };
       case 'channels':
         return { title: 'Connected Accounts', subtitle: 'YouTube, Instagram (Uplika), WhatsApp, and Telegram integrations' };
+      case 'notifications':
+        return { title: 'Notifications', subtitle: 'Real-time delivery status, call outcomes, and automated alert logs' };
       case 'activity':
         return { title: 'Activity Audit Log', subtitle: 'Immutable chronological trace of all automations, posts, and webhooks' };
       case 'settings':
         return { title: 'Settings & Knowledge Base', subtitle: 'Brand voice, business FAQ memory, and API credentials' };
-      case 'whatsapp':
-        return { title: 'WhatsApp Automation & Leads', subtitle: 'Automated messaging, AI FAQ answering & human help escalation' };
-      case 'instagram':
-        return { title: 'Instagram Automation & Leads', subtitle: 'Automated DMs, AI FAQ answering & human help escalation' };
-      case 'telegram':
-        return { title: 'Telegram Automation & Leads', subtitle: 'Bot auto-reply, AI FAQ answering, broadcast & channel scheduling' };
-      case 'rules':
-        return { title: 'Legacy Auto-Reply Rules', subtitle: 'Keyword triggers and AI rephrasing' };
       default:
         return { title: 'SocialManager', subtitle: 'Self-hosted AI social automation platform' };
     }
@@ -146,6 +145,7 @@ export const App: React.FC = () => {
         onSelectTab={setCurrentTab}
         pendingPostsCount={stats.pendingScheduled}
         unrepliedCount={unrepliedCount}
+        unreadNotificationsCount={unreadNotificationsCount}
         mobileMenuOpen={mobileMenuOpen}
         onCloseMobileMenu={() => setMobileMenuOpen(false)}
         onOpenCopilot={() => setCopilotOpen(true)}
@@ -166,12 +166,8 @@ export const App: React.FC = () => {
             }
           }}
           onOpenNewPost={() => {
-            if (currentTab === 'scheduler') {
-              setShowCreatePostModal(true);
-            } else {
-              setCurrentTab('scheduler');
-              setShowCreatePostModal(true);
-            }
+            setCurrentTab('content-publishing');
+            setShowCreatePostModal(true);
           }}
           onOpenAddLead={() => {
             setCurrentTab('crm');
@@ -223,8 +219,8 @@ export const App: React.FC = () => {
                 />
               )}
 
-              {currentTab === 'scheduler' && (
-                <SchedulerView
+              {(currentTab === 'content-publishing' || currentTab === 'scheduler' || currentTab === 'content-studio') && (
+                <ContentPublishingView
                   posts={posts}
                   channels={channels}
                   onRefresh={refreshAllData}
@@ -257,9 +253,7 @@ export const App: React.FC = () => {
               )}
 
               {currentTab === 'calling' && (
-                <div className="p-4 md:p-8 max-w-7xl mx-auto">
-                  <CallingAgentView />
-                </div>
+                <CallingAgentView />
               )}
 
               {currentTab === 'analytics' && (
@@ -274,6 +268,12 @@ export const App: React.FC = () => {
                 />
               )}
 
+              {currentTab === 'notifications' && (
+                <NotificationsView
+                  onNavigate={setCurrentTab}
+                />
+              )}
+
               {currentTab === 'activity' && (
                 <ActivityLogView
                   logs={logs}
@@ -284,28 +284,6 @@ export const App: React.FC = () => {
 
               {currentTab === 'settings' && (
                 <SettingsView />
-              )}
-
-              {/* Dedicated / Platform-Specific Channels */}
-              {currentTab === 'whatsapp' && (
-                <WhatsAppView />
-              )}
-
-              {currentTab === 'instagram' && (
-                <InstagramView />
-              )}
-
-              {currentTab === 'telegram' && (
-                <TelegramView />
-              )}
-
-              {currentTab === 'rules' && (
-                <RulesView
-                  rules={rules}
-                  onRefresh={refreshAllData}
-                  showCreateModal={showCreateRuleModal}
-                  onCloseCreateModal={() => setShowCreateRuleModal(false)}
-                />
               )}
             </>
           )}

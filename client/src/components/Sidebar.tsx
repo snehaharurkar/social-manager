@@ -1,13 +1,14 @@
 import React, { useState } from 'react';
 import { 
   LayoutDashboard, 
-  CalendarClock, 
+  Share2,
   MessageSquare, 
   Users, 
   Zap, 
   PhoneCall, 
   TrendingUp, 
   Tv2, 
+  Bell,
   History, 
   Settings, 
   Sparkles, 
@@ -23,6 +24,7 @@ interface SidebarProps {
   pendingPostsCount?: number;
   unrepliedCount?: number;
   leadAlertsCount?: number;
+  unreadNotificationsCount?: number;
   mobileMenuOpen?: boolean;
   onCloseMobileMenu?: () => void;
   onOpenCopilot?: () => void;
@@ -34,20 +36,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
   pendingPostsCount = 0,
   unrepliedCount = 0,
   leadAlertsCount = 0,
+  unreadNotificationsCount = 0,
   mobileMenuOpen = false,
   onCloseMobileMenu,
   onOpenCopilot
 }) => {
   const [collapsed, setCollapsed] = useState(false);
 
-  const mainWorkspaceItems = [
-    { id: 'overview', label: 'Overview', icon: LayoutDashboard },
+  // Feature-centric, platform-independent Workspace navigation
+  const workspaceItems = [
     { 
-      id: 'scheduler', 
-      label: 'Content & Scheduler', 
-      icon: CalendarClock,
+      id: 'overview', 
+      label: 'Overview', 
+      icon: LayoutDashboard 
+    },
+    { 
+      id: 'content-publishing', 
+      label: 'Content & Publishing', 
+      icon: Share2,
       badge: pendingPostsCount > 0 ? pendingPostsCount : undefined,
-      badgeColor: 'bg-amber-100 text-amber-800'
+      badgeColor: 'bg-purple-100 text-purple-800'
     },
     { 
       id: 'inbox', 
@@ -63,7 +71,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badge: leadAlertsCount > 0 ? leadAlertsCount : undefined,
       badgeColor: 'bg-emerald-100 text-emerald-800'
     },
-    { id: 'automations', label: 'AI Automations', icon: Zap },
+    { 
+      id: 'automations', 
+      label: 'AI Automations', 
+      icon: Zap 
+    },
     { 
       id: 'calling', 
       label: 'AI Calling Agent', 
@@ -71,13 +83,37 @@ export const Sidebar: React.FC<SidebarProps> = ({
       badge: 'Active',
       badgeColor: 'bg-sky-100 text-sky-800'
     },
-    { id: 'analytics', label: 'Analytics', icon: TrendingUp },
+    { 
+      id: 'analytics', 
+      label: 'Analytics', 
+      icon: TrendingUp 
+    },
   ];
 
+  // Management navigation
   const managementItems = [
-    { id: 'channels', label: 'Connected Accounts', icon: Tv2 },
-    { id: 'activity', label: 'Activity Log', icon: History },
-    { id: 'settings', label: 'Settings', icon: Settings },
+    { 
+      id: 'channels', 
+      label: 'Connected Accounts', 
+      icon: Tv2 
+    },
+    { 
+      id: 'notifications', 
+      label: 'Notifications', 
+      icon: Bell,
+      badge: unreadNotificationsCount > 0 ? unreadNotificationsCount : undefined,
+      badgeColor: 'bg-rose-100 text-rose-800'
+    },
+    { 
+      id: 'activity', 
+      label: 'Activity Log', 
+      icon: History 
+    },
+    { 
+      id: 'settings', 
+      label: 'Settings', 
+      icon: Settings 
+    },
   ];
 
   const handleTabClick = (tabId: string) => {
@@ -85,7 +121,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (onCloseMobileMenu) onCloseMobileMenu();
   };
 
-  const renderNavList = (items: typeof mainWorkspaceItems, sectionTitle?: string) => (
+  const renderNavList = (items: typeof workspaceItems, sectionTitle?: string) => (
     <div className="space-y-1">
       {sectionTitle && !collapsed && (
         <div className="px-3 pb-1.5 pt-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
@@ -94,7 +130,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
       )}
       {items.map((item) => {
         const Icon = item.icon;
-        const isActive = currentTab === item.id;
+        // Also support mapping legacy tab IDs if still passed
+        const isActive = currentTab === item.id || 
+          (item.id === 'content-publishing' && (currentTab === 'scheduler' || currentTab === 'content-studio'));
+        
         return (
           <button
             key={item.id}
@@ -142,7 +181,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               <h1 className="font-bold text-slate-800 text-[14px] tracking-tight leading-tight">SocialManager</h1>
               <p className="text-[10px] font-semibold text-emerald-600 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                AI SaaS Suite
+                Automation Suite
               </p>
             </div>
           )}
@@ -171,7 +210,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
       {/* Nav List */}
       <nav className="flex-1 px-3 py-3 space-y-4 overflow-y-auto">
-        {renderNavList(mainWorkspaceItems, 'Main Workspace')}
+        {renderNavList(workspaceItems, 'Workspace')}
         <div className="pt-2 border-t border-slate-100">
           {renderNavList(managementItems, 'Management')}
         </div>
@@ -197,11 +236,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <div className="flex items-center justify-between text-[11px] text-slate-600 font-medium">
               <span className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                Engine Active
+                Multi-Platform Engine
               </span>
-              <span className="text-[10px] text-slate-400 font-mono">v1.2</span>
+              <span className="text-[10px] text-slate-400 font-mono">v1.3</span>
             </div>
-            <p className="text-[10px] text-slate-400 mt-0.5">SQLite WAL · Localhost:5000</p>
+            <p className="text-[10px] text-slate-400 mt-0.5">YouTube · Instagram · Telegram</p>
           </div>
         )}
       </div>
