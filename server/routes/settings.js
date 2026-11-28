@@ -2,8 +2,7 @@ const express = require('express');
 const router = express.Router();
 const fs = require('fs');
 const path = require('path');
-const { DatabaseSync } = require('node:sqlite');
-const { db, getSetting, setSetting, getAllSettings, logActivity } = require('../db');
+const { Database, db, getSetting, setSetting, getAllSettings, logActivity } = require('../db');
 
 const dataDir = path.join(__dirname, '..', '..', 'data');
 const backupsDir = path.join(dataDir, 'backups');
@@ -155,7 +154,7 @@ router.post('/backup/verify', (req, res) => {
       return res.status(404).json({ success: false, error: 'Backup file does not exist' });
     }
 
-    const testDb = new DatabaseSync(targetPath);
+    const testDb = new Database(targetPath);
     const integrity = testDb.prepare('PRAGMA integrity_check;').all();
     const tables = testDb.prepare("SELECT name FROM sqlite_master WHERE type='table';").all().map(t => t.name);
     testDb.close();

@@ -527,6 +527,7 @@ function createNotification(title, message, category = 'general', level = 'info'
 }
 
 module.exports = {
+  Database,
   db,
   getSetting,
   setSetting,
