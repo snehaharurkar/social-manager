@@ -329,8 +329,11 @@ try {
   console.warn('Brand knowledge seed warning:', e.message);
 }
 
-// Helpers for Settings
+// Helpers for Settings (Prefers process.env if set, otherwise checks database)
 function getSetting(key) {
+  if (process.env[key] !== undefined && process.env[key] !== null && String(process.env[key]).trim() !== '') {
+    return String(process.env[key]).trim();
+  }
   const stmt = db.prepare('SELECT value FROM settings WHERE key = ?');
   const row = stmt.get(key);
   return row ? row.value : null;
